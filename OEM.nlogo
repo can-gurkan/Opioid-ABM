@@ -1,12 +1,37 @@
-;; This is version 3.001 of the narcan model for Pinellas county FL
 ;; goal of this model is to show the long term impact (or lack thereof) of increased narcan distribution
 
-extensions [ csv nw py rnd gis profiler]
+extensions [csv nw rnd gis]
 
-breed [ people person ]
-breed [ care-centers care-center]
-breed [ narcan-distributors narcan-distributor]
-breed [ EMS EMSP]
+globals[
+  ;; spatial attributes
+  county-border
+  care-locations
+  narcan-locations
+  cors
+  region-polygons
+  pop-data
+
+  ;; output counters
+  burn-in-time
+  rescue-counter
+  rescue-by-EMS
+  rescue-by-friend
+  OD-counter
+  OD-counter-today
+  OD-deaths
+  OD-deaths-today
+  OD-death-of-untreated
+  OD-death-of-recently-treated
+  total-narcan-available
+  total-treatment-capacity
+  treatment-utilization
+  narcan-penetration
+]
+
+breed [people person]
+breed [care-centers care-center]
+breed [narcan-distributors narcan-distributor]
+breed [EMS EMSP]
 breed [red-boxes red-box]
 
 ;; assigning characteristics to the different agents
@@ -77,37 +102,13 @@ care-centers-own[
 patches-own[
  patch-region
 ]
-globals[
-  ;; spatial attributes
-  county-border
-  care-locations
-  narcan-locations
-  cors
-  region-polygons
-  pop-data
 
-  ;; output counters
-  burn-in-time
-  rescue-counter
-  rescue-by-EMS
-  rescue-by-friend
-  OD-counter
-  OD-counter-today
-  OD-deaths
-  OD-deaths-today
-  OD-death-of-untreated
-  OD-death-of-recently-treated
-  total-narcan-available
-  total-treatment-capacity
-  treatment-utilization
-  narcan-penetration
-]
 
 ;;;;;;;;;;;;;; 0) code to set up the model ;;;;;;;;;;;;;;;;;;;;;
 to setup
   clear-all
   reset-ticks
-  import-drawing "Pinellas_Opioid_Setup/local_image.jpg"
+  import-drawing "regional_input_files/Pinellas-County-FL/local_image.jpg"
   setup-intervention
   setup-map
   setup-population
@@ -195,17 +196,17 @@ end
 ;;; 0.1.1
 to read-care-locations
   (ifelse
-    MAT-set = "MAT-only" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_simple.csv"]
-    MAT-set = "MAT-extra25-cap" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_extended-cap25.csv"]
-    MAT-set = "MAT-extra50-cap" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_extended-cap50.csv"]
-    MAT-set = "MAT-extra100-cap" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_extended-cap100.csv"]
-    MAT-set = "MAT-and-BUP25" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_long25.csv"]
-    MAT-set = "MAT-and-BUP50" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_long50.csv"]
-    MAT-set = "MAT-and-BUP100" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_long100.csv"]
-    MAT-set = "MAT-extra25-loc" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc25.csv"]
-    MAT-set = "MAT-extra50-loc" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc50.csv"]
-    MAT-set = "MAT-extra100-loc" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc100.csv"]
-    MAT-set = "intervention combo 7" [file-open "Pinellas_Opioid_Setup/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc100-and-long50.csv"]
+    MAT-set = "MAT-only"             [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_simple.csv"]
+    MAT-set = "MAT-extra25-cap"      [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-cap25.csv"]
+    MAT-set = "MAT-extra50-cap"      [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-cap50.csv"]
+    MAT-set = "MAT-extra100-cap"     [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-cap100.csv"]
+    MAT-set = "MAT-and-BUP25"        [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_long25.csv"]
+    MAT-set = "MAT-and-BUP50"        [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_long50.csv"]
+    MAT-set = "MAT-and-BUP100"       [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_long100.csv"]
+    MAT-set = "MAT-extra25-loc"      [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc25.csv"]
+    MAT-set = "MAT-extra50-loc"      [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc50.csv"]
+    MAT-set = "MAT-extra100-loc"     [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc100.csv"]
+    MAT-set = "intervention combo 7" [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc100-and-long50.csv"]
     []
   )
 
@@ -219,7 +220,7 @@ to read-care-locations
 end
 ;;; 0.1.2
 to read-narcan-locations
-  file-open "Pinellas_Opioid_Setup/NarcanProviders.csv"
+  file-open "regional_input_files/Pinellas-County-FL/NarcanProviders.csv"
   set narcan-locations []
   let row file-read-line
   while [not file-at-end?][
@@ -231,7 +232,7 @@ end
 ;;; 0.1.3
 to read-population-data
   set pop-data []
-  file-open "Pinellas_Opioid_Setup/pinellas_pop_data.csv"
+  file-open "regional_input_files/Pinellas-County-FL/pinellas_pop_data.csv"
   let header file-read-line                                                                        ;; take the first row in the file (consisting of headers) and store it
   while [not file-at-end?][                                                                        ;; for all consequative (so skipping the first line) row read in the data from the file in the prespecified variable
     set pop-data lput (csv:from-row file-read-line " ") pop-data
@@ -244,7 +245,7 @@ to read-region-boundaries
   let region-files ["pinellas" "clearwater" "largo" "stpetersburg"]
   if boundaries = "county" [set region-files (list item 0 region-files)]
   foreach region-files [ reg ->
-    file-open (word "Pinellas_Opioid_Setup/polygons/" reg "Poly.txt")
+    file-open (word "regional_input_files/Pinellas-County-FL/polygons/" reg "Poly.txt")
     let row ""
     let poly []
     while [not file-at-end?][
@@ -257,7 +258,7 @@ end
 ;;; 0.1.5
 to read-patch-regions
   set region-polygons []
-  file-open "Pinellas_Opioid_Setup/patch-region-file.csv"
+  file-open "regional_input_files/Pinellas-County-FL/patch-region-file.csv"
   while [not file-at-end?][
     let row csv:from-row file-read-line
     ask patch (item 0 row) (item 1 row) [set patch-region (item 2 row)]
@@ -1053,7 +1054,7 @@ isolated-user-percentage
 isolated-user-percentage
 0
 100
-40.0
+30.0
 5
 1
 %
@@ -1798,7 +1799,7 @@ false
 Polygon -7500403 true true 270 75 225 30 30 225 75 270
 Polygon -7500403 true true 30 75 75 30 270 225 225 270
 @#$#@#$#@
-NetLogo 6.2.1
+NetLogo 6.3.0
 @#$#@#$#@
 @#$#@#$#@
 @#$#@#$#@
