@@ -1,15 +1,18 @@
 ;; goal of this model is to show the long term impact (or lack thereof) of increased narcan distribution
 
-extensions [csv nw rnd gis]
+extensions [csv rnd gis fp]
 
 globals[
-  ;; spatial attributes
-  county-border
-  care-locations
-  narcan-locations
-  cors
-  region-polygons
-  pop-data
+
+  ;; input data arrays
+  gis-dataset
+  ct-index
+  ct-pop-data
+  ct-sex-data
+  ct-age-data
+  ct-race-data
+  care-center-data
+  narcan-dist-data
 
   ;; output counters
   burn-in-time
@@ -31,12 +34,12 @@ globals[
 breed [people person]
 breed [care-centers care-center]
 breed [narcan-distributors narcan-distributor]
-breed [EMS EMSP]
 breed [red-boxes red-box]
 
 ;; assigning characteristics to the different agents
 people-own [
   ;; Demographics
+  census-tract
   age                              ; the age of the individual in years
   race                             ; the race of the individual, categorical it will either be ( )
   gender                           ; a indicator if the gender of the individual
@@ -44,7 +47,7 @@ people-own [
   residence-location
   in-jail?
 
-  ;; Oppioid use related
+  ;; Opioid use related
   craving
   tolerance
   potency
@@ -81,333 +84,272 @@ people-own [
   aware-of-narcan?
   narcan-closeby?
   narcan-available?
-
 ]
+
+care-centers-own[
+  treatment-capacity
+  current-usage
+  waitlist
+  narcan-equiped?
+  supply
+
+  OTP?
+  detox?
+  res?
+  OP?
+  FQHC?
+  SPC?
+  PCP?
+  emergency?
+]
+
 narcan-distributors-own [
   supply
 ]
+
 red-boxes-own [
   supply
-]
-EMS-own[
-  base-location
-  region
-  narcan-equiped?
-]
-care-centers-own[
-  treatment-capacity
-  narcan-equiped?
-  supply
-]
-patches-own[
- patch-region
 ]
 
 
 ;;;;;;;;;;;;;; 0) code to set up the model ;;;;;;;;;;;;;;;;;;;;;
 to setup
   clear-all
-  reset-ticks
-  import-drawing "regional_input_files/Pinellas-County-FL/local_image.jpg"
-  setup-intervention
+
+  read-in-data
   setup-map
-  setup-population
-  setup-EMS
-  distribute-narcan
-  set burn-in-time 350
+  setup-pop
+  setup-care-centers
+  setup-narcan-distributors
+  reset-ticks
 end
 
-to setup-intervention
-  ( ifelse
-    intervention-package = "0" [                                                                 ; 0) no interventions
-      set percent-narcan-added 0
-      set add-location? FALSE
-      set narcan-boxes? "none"
-      set MAT-set "MAT-only"
-      set isolated-user-percentage 50
-    ]
-    intervention-package = "1" [                                                                 ; 1) ADD 25% more narcan using additional locations and add targeted RED boxes
-      set percent-narcan-added 50
-      set add-location? TRUE
-      set narcan-boxes? "random"
-      set MAT-set "MAT-only"
-      set isolated-user-percentage 50
-    ]
-    intervention-package = "2" [                                                                 ; 2) ADD Reduce use in isolation by 25%
-      set percent-narcan-added 0
-      set add-location? FALSE
-      set narcan-boxes? "none"
-      set MAT-set "MAT-only"
-      set isolated-user-percentage 30
-    ]
-    intervention-package = "3" [                                                                 ; 3) ADD 2 OTP treatment locations
-      set percent-narcan-added 0
-      set add-location? FALSE
-      set narcan-boxes? "none"
-      set MAT-set "MAT-extra100-loc"
-      set isolated-user-percentage 50
-    ]
-    intervention-package = "4" [                                                                 ; 4) ADD increase waivered phys clients to 10
-      set percent-narcan-added 0
-      set add-location? FALSE
-      set narcan-boxes? "none"
-      set MAT-set "MAT-and-BUP50"
-      set isolated-user-percentage 50
-    ]
-    intervention-package = "5" [                                                                 ; 5) [1+2] ADD 25% more narcan and additional locations, add targeted RED boxes, and reduce use in isolation by 25%
-      set percent-narcan-added 50
-      set add-location? TRUE
-      set narcan-boxes? "random"
-      set MAT-set "MAT-only"
-      set isolated-user-percentage 30
-    ]
-    intervention-package = "6" [                                                                 ; 6) [1+2+3] ADD 25% more narcan and additional location, add targeted RED boxes, Reduce use in isolation by 25%, and add 2 OTP treatment locations
-      set percent-narcan-added 50
-      set add-location? TRUE
-      set narcan-boxes? "random"
-      set MAT-set "MAT-extra100-loc"
-      set isolated-user-percentage 30
-    ]
-    intervention-package = "7" [                                                                 ; 7) [1+2+3+4] ADD 25% more narcan and additional location, add targeted RED boxes, Reduce use in isolation by 25%, add 2 OTP treatment locations, and increase waivered phys clients to 10
-      set percent-narcan-added 25
-      set add-location? TRUE
-      set narcan-boxes? "random"
-      set MAT-set "intervention combo 7"
-      set isolated-user-percentage 30
-    ]
-    []
-    )
-end
-
-
-
-;;; 0.1 setup the spatial environment
 to setup-map
-  ; read in various data
-  read-care-locations                        ;; see 0.1.1
-  read-narcan-locations                      ;; see 0.1.2
-  read-population-data                       ;; see 0.1.3
-  read-region-boundaries                     ;; see 0.1.4
-  read-patch-regions                         ;; see 0.1.5
-  ; place locations on the map
-  place-care-centers                         ;; see 0.1.6
-  place-narcan-providers                     ;; see 0.1.7
+  gis:load-coordinate-system "regional_input_files/Pinellas-County-FL/pinellas_gis/pinellas_census_tract.prj"
+  set gis-dataset gis:load-dataset "regional_input_files/Pinellas-County-FL/pinellas_gis/pinellas_census_tract.shp"
+  gis:set-world-envelope gis:envelope-of gis-dataset
+  if show-background-map? [
+    gis:import-wms-drawing "https://ows.terrestris.de/osm/service?" "EPSG:4326" "OSM-WMS" 0
+  ]
+  gis:set-drawing-color magenta
+  gis:draw gis-dataset 1
 end
-;;; 0.1.1
-to read-care-locations
-  (ifelse
-    MAT-set = "MAT-only"             [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_simple.csv"]
-    MAT-set = "MAT-extra25-cap"      [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-cap25.csv"]
-    MAT-set = "MAT-extra50-cap"      [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-cap50.csv"]
-    MAT-set = "MAT-extra100-cap"     [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-cap100.csv"]
-    MAT-set = "MAT-and-BUP25"        [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_long25.csv"]
-    MAT-set = "MAT-and-BUP50"        [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_long50.csv"]
-    MAT-set = "MAT-and-BUP100"       [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_long100.csv"]
-    MAT-set = "MAT-extra25-loc"      [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc25.csv"]
-    MAT-set = "MAT-extra50-loc"      [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc50.csv"]
-    MAT-set = "MAT-extra100-loc"     [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc100.csv"]
-    MAT-set = "intervention combo 7" [file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_MAT_providers_PinellasCounty_extended-loc100-and-long50.csv"]
-    []
-  )
 
-  set care-locations []
+to read-in-data
+  read-demographics-data
+  read-care-center-data
+  read-narcan-dist-data
+end
+
+to read-demographics-data
+  ;; obtained from https://data.census.gov/table?t=Age+and+Sex&g=040XX00US12_050XX00US12103$1400000&d=DEC+Demographic+Profile
+  file-open "regional_input_files/Pinellas-County-FL/cleaned-pinellas-demographics-by-census-tract.csv"
+  set ct-index but-first csv:from-row file-read-line
+  set ct-index replace-item 0 ct-index 0
+  ;print ct-index
   let row file-read-line
-  while [not file-at-end?][
-    set row csv:from-row file-read-line
-    set care-locations  lput (map [i -> item i row] range 15) care-locations
+  set ct-pop-data (but-first csv:from-row file-read-line)
+  ;print ct-pop-data
+  repeat 24 [set row file-read-line]
+  set ct-sex-data []
+  set ct-sex-data lput (but-first csv:from-row file-read-line) ct-sex-data
+  ;print ct-sex-data
+  let male-ct-age-data []
+  repeat 18 [set male-ct-age-data lput (but-first csv:from-row file-read-line) male-ct-age-data]
+  ;print male-ct-age-data
+  repeat 6 [set row file-read-line]
+  set ct-sex-data lput (but-first csv:from-row file-read-line) ct-sex-data
+  ;print item 1 ct-sex-data
+  let female-ct-age-data []
+  repeat 18 [set female-ct-age-data lput (but-first csv:from-row file-read-line) female-ct-age-data]
+  ;print female-ct-age-data
+  repeat 34 [set row file-read-line]
+  let hisp-ct-race-data but-first csv:from-row file-read-line
+  ;print hisp-ct-race-data
+  repeat 8 [set row file-read-line]
+  let white-ct-race-data but-first csv:from-row file-read-line
+  ;print white-ct-race-data
+  let aa-ct-race-data but-first csv:from-row file-read-line
+  ;print aa-ct-race-data
+  let other-ct-race-data map [i -> (item i ct-pop-data) - ((item i hisp-ct-race-data) + (item i white-ct-race-data) + (item i aa-ct-race-data)) ] range length ct-pop-data
+  ;print other-ct-race-data
+  file-close-all
+  set ct-age-data list male-ct-age-data female-ct-age-data
+  set ct-race-data (list aa-ct-race-data white-ct-race-data hisp-ct-race-data other-ct-race-data)
+end
+
+to read-care-center-data
+  file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_care_providers_PinellasCounty.csv"
+  let row file-read-line
+  set care-center-data []
+  while [ not file-at-end? ] [
+    set row sublist (csv:from-row file-read-line) 0 11
+    set care-center-data lput row care-center-data
   ]
+  ;print care-center-data
   file-close-all
 end
-;;; 0.1.2
-to read-narcan-locations
+
+to read-narcan-dist-data
   file-open "regional_input_files/Pinellas-County-FL/NarcanProviders.csv"
-  set narcan-locations []
+  set narcan-dist-data []
   let row file-read-line
   while [not file-at-end?][
     set row csv:from-row file-read-line
-    set narcan-locations  lput (map [i -> item i row] range 4) narcan-locations
+    set narcan-dist-data  lput but-last row narcan-dist-data
   ]
   file-close-all
 end
-;;; 0.1.3
-to read-population-data
-  set pop-data []
-  file-open "regional_input_files/Pinellas-County-FL/pinellas_pop_data.csv"
-  let header file-read-line                                                                        ;; take the first row in the file (consisting of headers) and store it
-  while [not file-at-end?][                                                                        ;; for all consequative (so skipping the first line) row read in the data from the file in the prespecified variable
-    set pop-data lput (csv:from-row file-read-line " ") pop-data
-  ]
-  file-close-all
-end
-;;; 0.1.4
-to read-region-boundaries
-  set region-polygons []
-  let region-files ["pinellas" "clearwater" "largo" "stpetersburg"]
-  if boundaries = "county" [set region-files (list item 0 region-files)]
-  foreach region-files [ reg ->
-    file-open (word "regional_input_files/Pinellas-County-FL/polygons/" reg "Poly.txt")
-    let row ""
-    let poly []
-    while [not file-at-end?][
-      set row (csv:from-row file-read-line "	")
-      set poly lput (map [i -> item i row] [1 0]) poly
-    ]
-    set region-polygons lput poly region-polygons
-  ]
-end
-;;; 0.1.5
-to read-patch-regions
-  set region-polygons []
-  file-open "regional_input_files/Pinellas-County-FL/patch-region-file.csv"
-  while [not file-at-end?][
-    let row csv:from-row file-read-line
-    ask patch (item 0 row) (item 1 row) [set patch-region (item 2 row)]
-  ]
-  file-close-all
-  set cors find-corners
-  if show-boundaries? [draw-boundaries]
-end
-to-report find-corners
-  let longs map [i -> item 0 i] care-locations
-  let lats  map [i -> item 1 i] care-locations
-  report (list (max longs) (max lats) (min longs) (min lats))
-end
-to draw-boundaries
-  let poly-color-num 0
-  foreach region-polygons [poly ->
-    crt 1 [
-      set color item poly-color-num [red magenta brown orange]
-      set poly-color-num poly-color-num + 1
-      let iloc item 0 poly
-      setxy lon-to-xcor (item 1 iloc) (item 0 iloc) lat-to-ycor (item 0 iloc)
-      pen-down
-      foreach poly [loc ->
-        setxy lon-to-xcor (item 1 loc) (item 0 loc) lat-to-ycor (item 0 loc)
-      ]
-      die
+
+to setup-care-centers
+  foreach care-center-data [ data-row ->
+    create-care-centers 1 [
+      let loc gis:project-lat-lon item 0 data-row item 1 data-row
+      setxy item 0 loc item 1 loc
+
+      set OTP?       item 2 data-row
+      set detox?     item 3 data-row
+      set res?       item 4 data-row
+      set OP?        item 5 data-row
+      set FQHC?      item 6 data-row
+      set SPC?       item 7 data-row
+      set PCP?       item 8 data-row
+      set emergency? item 9 data-row
+      set treatment-capacity item 10 data-row
+
+      set color get-care-color data-row
+      set shape "house"
+      set size .5
+      if not care-centers-visible? [hide-turtle]
     ]
   ]
 end
-;;; 0.1.6
-to place-care-centers
-  foreach care-locations [loc -> create-care-centers 1 [
-    set color get-care-color loc
-    set shape "house"
-    set size .5
-    setxy lon-to-xcor (item 1 loc) (item 0 loc) lat-to-ycor (item 0 loc)
-    set treatment-capacity item 10 loc
-    if not care-centers-visible? [hide-turtle]
-    ]
-  ]
-  set total-treatment-capacity sum [treatment-capacity] of care-centers
-end
+
 to-report get-care-color [ row ]
   let c filter [r -> r != 0] (map [i -> ifelse-value ((item i row) = 1) [item (i + 3) base-colors][0]] (range 2 10))
   report ifelse-value (empty? c) [red] [item 0 c]
 end
-;;; 0.1.7
-to place-narcan-providers
-  foreach narcan-locations [loc -> create-narcan-distributors 1 [
-    set color green
-    set shape "house"
-    set size .5
-    setxy lon-to-xcor (item 1 loc) (item 0 loc) lat-to-ycor (item 0 loc)
-    set supply item 2 loc
-    if not narcan-providers-visible? [hide-turtle]
-    ]
-  ]
-  if percent-narcan-added != 0 [
-    ifelse add-location? [
 
-      foreach (list (list 27.97691	-82.78833) (list 27.76446	-82.68671)) [loc -> create-narcan-distributors 1 [
-        set color green
-        set shape "house"
-        set size .5
-        setxy lon-to-xcor (item 1 loc) (item 0 loc) lat-to-ycor (item 0 loc)
-        set supply 1400
-        if not narcan-providers-visible? [hide-turtle]
-        ]
-      ]
-
-
-
-;
-;      let mean-narcan mean [supply] of narcan-distributors
-;      set total-narcan-available sum [supply] of narcan-distributors
-;      ask patch -2 -0 [ sprout-narcan-distributors 1 [
-;        set color green
-;        set shape "house"
-;        set size .5
-;        set supply total-narcan-available * percent-narcan-added
-;        if not narcan-providers-visible? [hide-turtle]
-;        ]
-;      ]
-    ][
-      ask narcan-distributors [ set supply supply + ( supply * (percent-narcan-added / 100 )) ]
+to setup-narcan-distributors
+  foreach narcan-dist-data [ data-row ->
+    create-narcan-distributors 1 [
+      let loc gis:project-lat-lon item 0 data-row item 1 data-row
+      setxy item 0 loc item 1 loc
+      set supply item 2 data-row
+      set color green
+      set shape "pentagon"
+      set size 0.5
+      if not narcan-providers-visible? [hide-turtle]
     ]
   ]
   set total-narcan-available sum [supply] of narcan-distributors
 end
 
+
 ;;; 0.2 setup of the individuals in the simulation
-to setup-population
-  let init-population n-of population pop-data
-  foreach init-population [ row ->
-    create-people 1 [
-     ;demographics
-      set race item 0 row
-      set gender item 1 row
-      set age int (item 2 row)
-      set region item 3 row
-      find-residence-location
-      set in-jail? false
 
-      ;use parameters
-      set craving random-float 100
-      set tolerance personal-tolerance
-      set use-location-pref personal-location-pref
-      set use-isolation-rate personal-isolation-rate
-      set use-recent-week  (list use-flip use-flip use-flip use-flip use-flip use-flip use-flip )
-      set use-today? use-flip
+to setup-pop
+  create-people population [
+    ;demographics
+    set census-tract assign-ct
+    ;print census-tract
+    let ct-num item 0 fp:find-indices [x -> x = census-tract] ct-index
+    set gender assign-sex ct-num
+    ;print gender
+    set age assign-age ct-num
+    ;print age
+    set race assign-race ct-num
+    ;print race
 
-      ; treatment parameters
-      set treatment-today? false
-      set in-treatment? false
-      set care-seeking-duration 0
-      set care-seeking? false
-      set personal-motivation random 100
-      set treatment-options care-centers with [treatment-capacity > 0]
-      set treatment-distances ( list [distance myself] of treatment-options)
+    ;use parameters
+    set craving random-float 100
+    set tolerance personal-tolerance
+    set use-location-pref personal-location-pref
+    set use-isolation-rate personal-isolation-rate
+    set use-recent-week  map [-> use-flip] range 7
+    set use-today? use-flip
 
-      ;OD parameters
-      set OD-today? false
-      set OD-count 0
-      set OD-recent-week (list 0 0 0 0 0 0 0 )
+    ; treatment parameters
+    set treatment-today? false
+    set in-treatment? false
+    set care-seeking-duration 0
+    set care-seeking? false
+    set personal-motivation random 100
 
-      ; narcan info
-      set carrying-narcan? false
-      set narcan-closeby? any? red-boxes in-radius 0.5 or any? narcan-distributors in-radius 0.5
-      set narcan-available?  any? red-boxes in-radius 1 or any? narcan-distributors in-radius 1
-      set aware-of-narcan? false
+    ;OD parameters
+    set OD-today? false
+    set OD-count 0
+    set OD-recent-week (list 0 0 0 0 0 0 0 )
 
-      ;visualization
-      set size 0.2
-      set shape "person"
-      set color blue
-      if not people-visible? [hide-turtle]
+    ;visualization
+    set size 0.5
+    set shape "person"
+    set color blue
+    if not people-visible? [hide-turtle]
+  ]
+  place-population
+end
+
+to-report assign-ct
+  let zip-list fp:zip (but-first ct-pop-data) (but-first ct-index)
+  report last rnd:weighted-one-of-list zip-list [[p] -> first p]
+end
+
+to-report assign-sex [ct-num]
+  let prob-list map [i -> item ct-num item i ct-sex-data] range 2
+  ;print prob-list
+  let zip-list fp:zip prob-list ["MALE" "FEMALE"]
+  report last rnd:weighted-one-of-list zip-list [[p] -> first p]
+end
+
+to-report assign-age [ct-num]
+  let age-groups get-age-groups
+  let sex-num ifelse-value gender = "MALE" [0][1]
+  let prob-list map [i -> item ct-num item i item sex-num ct-age-data] range length age-groups
+  let zip-list fp:zip prob-list age-groups
+  let age-range last rnd:weighted-one-of-list zip-list [[p] -> first p]
+  report (item 0 age-range) + random ((item 1 age-range) - (item 0 age-range) + 1)
+end
+
+to-report get-age-groups
+  let age-groups []
+  let age-count 0
+  foreach range 17 [i ->
+    let lb age-count
+    foreach range 4 [j ->
+      set age-count age-count + 1
+    ]
+    let ub age-count
+    set age-groups lput (list lb ub) age-groups
+    set age-count age-count + 1
+  ]
+  set age-groups lput (list 85 100) age-groups
+  report age-groups
+end
+
+to-report assign-race [ct-num]
+  let prob-list map [i -> item ct-num item i ct-race-data] range 4
+  ;print prob-list
+  let zip-list fp:zip prob-list ["AA" "WHITE" "HISP" "OTHER"]
+  report last rnd:weighted-one-of-list zip-list [[p] -> first p]
+end
+
+to place-population
+  foreach gis:feature-list-of gis-dataset [vector-feature ->
+    let ct-name gis:property-value vector-feature "NAME"
+    ask people with [(word census-tract) = ct-name] [
+      ;print who
+      let loc gis:location-of gis:random-point-inside vector-feature
+      set xcor item 0 loc
+      set ycor item 1 loc
     ]
   ]
 end
-to find-residence-location
-  let perturb 1
-  if region = "rural" or region = "palmharbor" [set region "pinellas"]
-  let coors [list pxcor pycor] of one-of patches with [patch-region = [region] of myself]
-  setxy (item 0 coors + (random-float perturb) - perturb / 2) (item 1 coors + (random-float perturb) - perturb / 2)
-  set residence-location patch-here
-end
+
 to-report personal-tolerance
   report random-float 100
 end
+
 to-report personal-location-pref
   let pref (list 0 0 0)
   ;;; the following rates should be based on observed death data, while this might not be representative of where people use, it is the only data we have relating to use
@@ -416,56 +358,24 @@ to-report personal-location-pref
   set pref replace-item 2 pref ((20 + random 20) - random 20) ;; 20% chance of prefering to use in other location
   report pref
 end
+
 to-report personal-isolation-rate
   let perc isolated-user-percentage
   report random-normal isolated-user-percentage (0.2 * isolated-user-percentage )
 end
+
 to-report use-flip
   report ifelse-value random 100 < 30 [TRUE][FALSE]
 end
 
-;;; 0.3 setup of the emergency services in the simulation
-to setup-EMS
-  create-EMS round population / 100 [
-    set shape "car"
-    set color red
-    set size 0.3
-    let perturb 1
-    let coors [list pxcor pycor] of one-of patches with [ patch-region != 0]
-    setxy (item 0 coors + (random-float perturb) - perturb / 2) (item 1 coors + (random-float perturb) - perturb / 2)
-    set Base-location patch-here
-    if not EMS-visible? [hide-turtle]
-  ]
-end
 
-;;; 0.4 setup the distribution of narcan among EMS and red-boxes
-to distribute-narcan
-  ask EMS [
-    ifelse random 1000 < 900 [ set narcan-equiped? true ] [ set narcan-equiped? false ]
-  ]
-  if narcan-boxes? = "random" [
-    create-red-boxes nr-narcan-boxes [
-      set shape "circle"
-      set size 0.2
-      set color red
-      set supply 25
-      let coors [list pxcor pycor] of one-of patches with [ patch-region != 0]
-      let perturb 1
-      setxy (item 0 coors + (random-float perturb) - perturb / 2) (item 1 coors + (random-float perturb) - perturb / 2)
-    ]
-  ]
-  if narcan-boxes? = "targeted" [
-    create-red-boxes nr-narcan-boxes [
-      set shape "circle"
-      set size 0.2
-      set color red
-      set supply 25
-      let box-region one-of (list "region1" "region2" "region3")
-      if box-region = "region1" [ setxy (random-float 2 - 3.5) (random-float 4 - 3) ]
-      if box-region = "region2" [ setxy (random-float 2 + 2) (random-float 4 - 4) ]
-      if box-region = "region3" [ setxy (random-float 1 - 1.5) (random-float 3 + 7) ]
-    ]
-  ]
+
+
+
+to go
+  if ticks = 8760 [ stop ]
+
+  tick
 end
 
 
@@ -473,85 +383,30 @@ end
 
 
 ;;;;;;;;;;;;;; X) supporting procedures ;;;;;;;;;;;;;;;;;;;;;
-
-;;; GEOGRAPHIC REPORTERS
-
-to-report image-dim
-  report 500
-end
-to-report center-zoom
-  ;py:run "from py_scripts import draw_map as dw"
-  ;py:set "cor_list" cors
-  ;report py:runresult "dw.get_center_zoom(cor_list)"
-  report [[27.900778149999997 -82.7314389] 10]
-end
-to-report center-lat
-  report item 0 (item 0 center-zoom)
-end
-to-report center-lon
-  report item 1 (item 0 center-zoom)
-end
-to-report zoom-level
-  report item 1 center-zoom
-end
-to-report image-px-to-km
-  ; from https://gis.stackexchange.com/a/127949
-  report 156.54303392 * (cos center-lat) / (2 ^ zoom-level)
-end
-to-report km-to-dist [ km ]
-  report (km / image-px-to-km) * world-width / image-dim
-end
-to-report dist-to-km [ d ]
-  report image-px-to-km * d * image-dim / world-width
-end
-to-report km-to-lat [ y ]
-  report y / 110.574
-end
-to-report km-to-lon [ x la ]
-  report x / (111.320 * cos la)
-end
-to-report lat-to-km [ la ]
-  report 110.574 * la
-end
-to-report lon-to-km [ lo la ]
-  report lo * 111.320 * cos la
-end
-to-report xcor-to-lon [ x lat ]
-  report km-to-lon dist-to-km (x - (max-pxcor + min-pxcor) / 2) lat + center-lon
-end
-to-report ycor-to-lat [ y ]
-  report km-to-lat dist-to-km (y - (max-pycor + min-pycor) / 2) + center-lat
-end
-to-report lon-to-xcor [ lon lat ]
-  report (km-to-dist lon-to-km (lon - center-lon) lat) + (max-pxcor + min-pxcor) / 2
-end
-to-report lat-to-ycor [ lat ]
-  report (km-to-dist lat-to-km (lat - center-lat)) + (max-pycor + min-pycor) / 2
-end
 @#$#@#$#@
 GRAPHICS-WINDOW
-146
+295
 10
-879
-976
+839
+727
 -1
 -1
-29.0
+21.455
 1
 10
 1
 1
 1
 0
-1
-1
+0
+0
 1
 -12
 12
 -16
 16
-0
-0
+1
+1
 1
 ticks
 30.0
@@ -626,15 +481,15 @@ add-location?
 -1000
 
 SLIDER
-911
-16
-1083
-49
+20
+25
+192
+58
 population
 population
 5000
 20000
-18000.0
+20000.0
 500
 1
 NIL
@@ -667,10 +522,10 @@ people-visible?
 -1000
 
 BUTTON
-57
-74
-120
-107
+20
+100
+83
+133
 NIL
 setup
 NIL
@@ -704,47 +559,11 @@ narcan-boxes?
 "none" "random" "targeted"
 1
 
-PLOT
-1291
-523
-1491
-673
-mean tolerance
-NIL
-NIL
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"default" 1.0 0 -16777216 true "" "plot mean [tolerance] of people"
-
-PLOT
-1495
-522
-1695
-672
-mean craving
-NIL
-NIL
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"default" 1.0 0 -16777216 true "" "plot mean [craving] of people"
-
 BUTTON
-58
-120
-121
-153
+95
+100
+158
+133
 NIL
 go
 T
@@ -757,75 +576,6 @@ NIL
 NIL
 1
 
-PLOT
-1694
-522
-1894
-672
-desire to use
-NIL
-NIL
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"default" 1.0 0 -16777216 true "" "plot (count people with [intent-to-use?]) / 120"
-
-PLOT
-1292
-354
-1492
-504
-daily-ODs
-NIL
-NIL
-50.0
-1000.0
-0.0
-20.0
-false
-false
-"" ""
-PENS
-"default" 1.0 0 -16777216 true "" "plot OD-counter-today"
-
-MONITOR
-934
-350
-1031
-395
-NIL
-rescue-counter
-0
-1
-11
-
-MONITOR
-934
-395
-1031
-440
-NIL
-OD-deaths
-17
-1
-11
-
-MONITOR
-1031
-372
-1101
-417
-Rescue %
-(rescue-counter / OD-counter) * 100
-1
-1
-11
-
 SWITCH
 1106
 163
@@ -836,24 +586,6 @@ leave-behind-narcan?
 1
 1
 -1000
-
-PLOT
-1496
-354
-1696
-504
-% carrying narcan
-NIL
-NIL
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"default" 1.0 0 -16777216 true "" "plot narcan-penetration"
 
 SLIDER
 1106
@@ -870,24 +602,6 @@ nr-narcan-boxes
 NIL
 HORIZONTAL
 
-PLOT
-1696
-354
-1896
-504
-% in-treatment
-NIL
-NIL
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"default" 1.0 0 -16777216 true "" "plot (count people with [treatment-today?] / count people ) * 100"
-
 SLIDER
 1106
 238
@@ -903,17 +617,6 @@ treatment-narcan-supply-likelihood
 %
 HORIZONTAL
 
-MONITOR
-1134
-455
-1258
-500
-treatment utilization
-treatment-utilization
-2
-1
-11
-
 CHOOSER
 910
 127
@@ -925,10 +628,10 @@ MAT-set
 10
 
 BUTTON
-48
-175
-130
-208
+20
+140
+160
+173
 go-1year
 setup\nrepeat 365 + burn-in-time [go]
 NIL
@@ -941,74 +644,6 @@ NIL
 NIL
 1
 
-PLOT
-1072
-523
-1272
-673
-% of users daily
-NIL
-NIL
-0.0
-10.0
-0.0
-10.0
-true
-false
-"" ""
-PENS
-"default" 1.0 0 -16777216 true "" "plot (count people with [use-today?] / count people) * 100"
-
-MONITOR
-934
-439
-1047
-484
-NIL
-OD-death-of-recently-treated
-0
-1
-11
-
-MONITOR
-934
-483
-1047
-528
-NIL
-OD-death-of-untreated
-17
-1
-11
-
-BUTTON
-48
-215
-139
-248
-go-another year
-repeat 365 [go]
-NIL
-1
-T
-OBSERVER
-NIL
-NIL
-NIL
-NIL
-1
-
-MONITOR
-1047
-439
-1105
-484
-% death among recent treatment
-(OD-death-of-recently-treated / od-deaths) * 100
-2
-1
-11
-
 CHOOSER
 910
 78
@@ -1017,40 +652,18 @@ CHOOSER
 Intervention-package
 Intervention-package
 "0" "1" "2" "3" "4" "5" "6" "7" "8" "9"
-7
-
-MONITOR
-1144
-351
-1249
-396
-NIL
-rescue-by-friend
 0
-1
-11
 
-MONITOR
-1144
-396
-1249
-441
-NIL
-rescue-by-EMS
-17
+SWITCH
+1445
+275
+1652
+308
+show-background-map?
+show-background-map?
 1
-11
-
-MONITOR
-1496
-309
-1590
-354
-% with narcan
-narcan-penetration
-2
 1
-11
+-1000
 
 @#$#@#$#@
 ## WHAT IS IT?
@@ -1569,5 +1182,5 @@ true
 Line -7500403 true 150 150 90 180
 Line -7500403 true 150 150 210 180
 @#$#@#$#@
-0
+1
 @#$#@#$#@
