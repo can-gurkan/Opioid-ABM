@@ -236,6 +236,7 @@ to setup-narcan-distributors
       let loc gis:project-lat-lon item 0 data-row item 1 data-row
       setxy item 0 loc item 1 loc
       set supply item 2 data-row
+
       set color green
       set shape "pentagon"
       set size 0.5
