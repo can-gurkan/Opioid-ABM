@@ -276,7 +276,7 @@ end
 to setup-EMS
   create-EMS round population / 100 [
     set shape "car"
-    set color red
+    set color white
     set size 0.5
     let vector-feature nobody
     ;; TO DO: A cleaner implementation without while loop
@@ -665,8 +665,8 @@ to-report Rescue-event?
   ;set death-prob death-prob * (1 - treatment-factor)
   ;print (death-rate * (1 - treatment-factor))
   ;print treatment-factor
-  ;report ifelse-value random-float 1 < (death-rate * (1 - treatment-factor)) [false] [true]
-  report ifelse-value random-float 1 < death-prob [false] [true]
+  let treatment-factor treatment-death-reduction-factor days-in-treatment
+  ;report ifelse-value random-float 1 < death-prob [false] [true]
 end
 
 
@@ -749,7 +749,7 @@ to seek-treatment
 
   if care-seeking? = FALSE and in-treatment? = FALSE [
     let linkage-rate 0.5
-    if intervention-scenario = 3 [set linkage-rate linkage-rate * 2]
+    if intervention-scenario = 1 or intervention-scenario = 3 [set linkage-rate linkage-rate * 2]
     if intervention-scenario = 4 [set linkage-rate 100]
     if random-float 100 < linkage-rate [
       set care-seeking? TRUE
@@ -762,7 +762,7 @@ to get-in-treatment
   ;; once intent to seeking care is obtained, get linked to care
   if care-seeking? [
     set treatment-type ifelse-value random-float 1 < .57 ["MOUD"]["MAT"]
-    if intervention-scenario >= 1 [set treatment-type "MAT"]
+    ;if intervention-scenario >= 1 [set treatment-type "MAT"]
     set my-treatment-provider rnd:weighted-one-of care-centers [(1 / distance myself)]
     set my-treatment-distance [distance myself] of my-treatment-provider
     if [treatment-capacity] of my-treatment-provider > 0 [
@@ -780,17 +780,18 @@ to consume-treatment
     set treatment-today? true
     set last-treated ticks
     set days-in-treatment days-in-treatment + 1
-    let treatment-factor ifelse-value in-treatment? [
-      ifelse-value treatment-type = "MOUD" [bup-death-reduction-factor ticks][met-death-reduction-factor ticks]
-    ] [0]
-    set death-prob death-prob * (1 - treatment-factor)
+;    let treatment-factor ifelse-value in-treatment? [
+;      ifelse-value treatment-type = "MOUD" [bup-death-reduction-factor ticks][met-death-reduction-factor ticks]
+;    ] [0]
+;    set death-prob death-prob * (1 - treatment-factor)
     potentially-drop-out
   ]
 end
 
 to potentially-drop-out
   let drop-out-chance drop-out-prob days-in-treatment
-  if intervention-scenario >= 2 [set drop-out-chance 0]
+  if intervention-scenario = 2 or intervention-scenario = 3 [set drop-out-chance drop-out-chance / 2 ]
+  if intervention-scenario = 4 [set drop-out-chance 0]
   if random-float 1 < drop-out-chance [
     set in-treatment? false
     set days-in-treatment 0
@@ -799,6 +800,10 @@ to potentially-drop-out
     set my-treatment-provider nobody
      set death-prob default-death-rate
   ]
+end
+
+to-report treatment-death-reduction-factor [day]
+  report ifelse-value day < 180 [day * 0.87 / 180] [0.87]
 end
 
 to-report bup-death-reduction-factor [day]
@@ -827,10 +832,10 @@ end
 
 ;; Intervention-scenario values
 ;; 0: Baseline (no interventions)
-;; 1: All treatment types are MAT
-;; 2: 1 + No drop-out
-;; 3: 2 + Double treatment linkage rate
-;; 4: 2 + Everyone is in treatment
+;; 1: Double treatment linkage rate
+;; 2: Half drop-out rate
+;; 3: 1 + 2
+;; 4: MAX Everyone is in treatment + No drop-out
 @#$#@#$#@
 GRAPHICS-WINDOW
 295
@@ -1547,6 +1552,82 @@ NetLogo 6.4.0
     </enumeratedValueSet>
   </experiment>
   <experiment name="max-treatment-exp" repetitions="100" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <timeLimit steps="365"/>
+    <metric>count people</metric>
+    <metric>count people with [treatment-today?]</metric>
+    <metric>count people with [use-today?]</metric>
+    <metric>count people with [intent-to-use?]</metric>
+    <metric>count people with [last-treated = 0]</metric>
+    <metric>mean [days-in-treatment] of people</metric>
+    <metric>mean [days-in-treatment] of people with [in-treatment?]</metric>
+    <metric>mean [my-treatment-distance] of people with [in-treatment?]</metric>
+    <metric>rescue-counter</metric>
+    <metric>rescue-by-EMS</metric>
+    <metric>rescue-by-friend</metric>
+    <metric>OD-death-of-untreated</metric>
+    <metric>OD-death-of-recently-treated</metric>
+    <metric>treatment-utilization</metric>
+    <metric>total-treatment-capacity</metric>
+    <metric>OD-counter</metric>
+    <metric>OD-deaths</metric>
+    <metric>treatment-entry</metric>
+    <metric>in-treatment-total</metric>
+    <metric>in-treatment-today</metric>
+    <metric>in-treatment-180</metric>
+    <metric>in-treatment-60</metric>
+    <enumeratedValueSet variable="nr-narcan-boxes">
+      <value value="200"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="intervention-scenario">
+      <value value="0"/>
+      <value value="1"/>
+      <value value="2"/>
+      <value value="3"/>
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="burn-in?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="EMS-visible?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="population">
+      <value value="20000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="show-boundaries?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="isolated-user-percentage">
+      <value value="30"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="narcan-boxes?">
+      <value value="&quot;random&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="leave-behind-narcan?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="show-background-map?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="red-box-visible?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="care-centers-visible?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="narcan-providers-visible?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="people-visible?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="treatment-narcan-supply-likelihood">
+      <value value="10"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="max-treatment-exp-quest" repetitions="1" runMetricsEveryStep="true">
     <setup>setup</setup>
     <go>go</go>
     <timeLimit steps="365"/>
