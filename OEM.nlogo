@@ -3,7 +3,6 @@
 extensions [csv rnd gis fp]
 
 globals[
-
   ;; input data arrays
   gis-dataset
   ct-index
@@ -14,8 +13,12 @@ globals[
   care-center-data
   narcan-dist-data
 
-  ;; output counters
+  default-death-rate
+
   burn-in-time
+  during-burn-in?
+
+  ;; output metrics
   rescue-counter
   rescue-by-EMS
   rescue-by-friend
@@ -28,12 +31,18 @@ globals[
   total-narcan-available
   total-treatment-capacity
   treatment-utilization
+  treatment-entry
+  in-treatment-total
+  in-treatment-today
+  in-treatment-180
+  in-treatment-60
   narcan-penetration
 ]
 
 breed [people person]
 breed [care-centers care-center]
 breed [narcan-distributors narcan-distributor]
+breed [ EMS EMSP]
 breed [red-boxes red-box]
 
 ;; assigning characteristics to the different agents
@@ -60,6 +69,7 @@ people-own [
   use-in-isolation?
   use-at
   rescued-today?
+  death-prob
 
   ;; treatment related
   care-seeking-duration
@@ -73,6 +83,7 @@ people-own [
   my-treatment-provider
   treatment-distances
   my-treatment-distance
+  treatment-type
 
   ;; OD related
   OD-today?
@@ -107,6 +118,12 @@ narcan-distributors-own [
   supply
 ]
 
+EMS-own[
+  base-location
+  census-tract
+  narcan-equiped?
+]
+
 red-boxes-own [
   supply
 ]
@@ -116,13 +133,20 @@ red-boxes-own [
 
 to setup
   clear-all
-
   read-in-data
   setup-map
   setup-pop
   setup-care-centers
   setup-narcan-distributors
+  setup-EMS
+  distribute-narcan
+  init-metrics
+  set default-death-rate 0.15316
   reset-ticks
+  if burn-in? [
+    set burn-in-time 350
+    do-burn-in
+  ]
 end
 
 to setup-map
@@ -224,6 +248,7 @@ to setup-care-centers
       if not care-centers-visible? [hide-turtle]
     ]
   ]
+  set total-treatment-capacity sum [treatment-capacity] of care-centers
 end
 
 to-report get-care-color [ row ]
@@ -245,6 +270,47 @@ to setup-narcan-distributors
     ]
   ]
   set total-narcan-available sum [supply] of narcan-distributors
+end
+
+;;; setup of the emergency services in the simulation
+to setup-EMS
+  create-EMS round population / 100 [
+    set shape "car"
+    set color red
+    set size 0.5
+    let vector-feature nobody
+    ;; TO DO: A cleaner implementation without while loop
+    while [vector-feature = nobody] [
+      set census-tract assign-ct
+      set vector-feature gis:find-one-feature gis-dataset "NAME" (word census-tract)
+    ]
+    let loc gis:location-of gis:random-point-inside vector-feature
+    setxy (item 0 loc) (item 1 loc)
+    set Base-location patch-here
+    if not EMS-visible? [hide-turtle]
+  ]
+end
+
+;;; setup the distribution of narcan among EMS and red-boxes
+to distribute-narcan
+  ask EMS [
+    ifelse random 1000 < 900 [ set narcan-equiped? true ] [ set narcan-equiped? false ]
+  ]
+  if narcan-boxes? = "random" [
+    create-red-boxes nr-narcan-boxes [
+      set shape "box"
+      set size 0.5
+      set color red
+      set supply 25
+      let loc gis:location-of gis:random-point-inside one-of gis:feature-list-of gis-dataset
+      setxy (item 0 loc) (item 1 loc)
+      if not red-box-visible? [hide-turtle]
+    ]
+  ]
+  if narcan-boxes? = "targeted" [
+    print "Error: not implemented"
+    stop
+  ]
 end
 
 
@@ -269,7 +335,8 @@ to setup-pop
     set use-location-pref personal-location-pref
     set use-isolation-rate personal-isolation-rate
     set use-recent-week  map [-> use-flip] range 7
-    set use-today? use-flip
+    set use-today? true ;use-flip
+    set death-prob default-death-rate
 
     ; treatment parameters
     set treatment-today? false
@@ -282,6 +349,13 @@ to setup-pop
     set OD-today? false
     set OD-count 0
     set OD-recent-week (list 0 0 0 0 0 0 0 )
+
+    ; narcan parameters
+    set carrying-narcan? false
+    ;; commented for now bc in-radius takes too much time
+    ;set narcan-closeby? any? red-boxes in-radius 0.5 or any? narcan-distributors in-radius 0.5
+    ;set narcan-available?  any? red-boxes in-radius 1 or any? narcan-distributors in-radius 1
+    set aware-of-narcan? false
 
     ;visualization
     set size 0.5
@@ -370,25 +444,393 @@ to-report use-flip
   report ifelse-value random 100 < 30 [TRUE][FALSE]
 end
 
+to init-metrics
+  set rescue-counter 0
+  set rescue-by-EMS 0
+  set rescue-by-friend 0
+  set OD-deaths 0
+  set OD-counter 0
+  set OD-death-of-recently-treated 0
+  set OD-death-of-untreated 0
+  set treatment-entry 0
+  set in-treatment-total 0
+  set in-treatment-today 0
+  set in-treatment-180 0
+  set in-treatment-60  0
+end
 
-;;;;;;;;;;;;;; GO ;;;;;;;;;;;;;;;;;;;;;
+to do-burn-in
+  let temp-int-scenario intervention-scenario
+  set during-burn-in? true
+  repeat burn-in-time [
+    set intervention-scenario 0
+    go
+  ]
+  set intervention-scenario temp-int-scenario
+  set during-burn-in? false
+  init-metrics
+  reset-ticks
+end
+
+;;;;;;;;;;;;;; GO PROCEDURES ;;;;;;;;;;;;;;;;;;;;;
 
 
 to go
-  if ticks = 8760 [ stop ]
-
+  if ticks = 365 [ stop ]
+  reset-daily-counts
+  ask people [
+    ;; drug usage
+    determine-use
+    acquire-drugs
+    consume-drugs
+    ;; rescue
+    rescue-or-die
+    ;; treatment
+    seek-treatment
+    get-in-treatment
+    consume-treatment
+    ;; interventions
+  ]
   tick
 end
 
 
-;;;;;;;;;;;;;; 1) USAGE ;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;; 1) DRUG USAGE ;;;;;;;;;;;;;;;;;;;;; (Mostly from the old model)
+
+to reset-daily-counts
+  set OD-counter-today 0
+  set OD-deaths-today 0
+  set narcan-penetration (count people with [ carrying-narcan? ] / count people) * 100
+  ; update reporters
+  set treatment-utilization 100 - ((sum [treatment-capacity] of care-centers / total-treatment-capacity) * 100)
+  set in-treatment-total count people with [last-treated > 0]
+  set in-treatment-today count people with [in-treatment?]
+  set in-treatment-180 count people with [in-treatment? and days-in-treatment >= 180]
+  set in-treatment-60 count people with [in-treatment? and days-in-treatment >= 60]
+  ; resupply red-boxes
+  ask red-boxes [ set supply 25 ]
+end
+
+;;; 1.1 a procedure that specifies how individuals determine their use for a given day
+to determine-use
+  ; update the history of use
+  ifelse use-today? [ set use-recent-week insert-item 0 use-recent-week 1 ][set use-recent-week insert-item 0 use-recent-week 0]   ;; add a 0/1 to recent usage
+  set use-recent-week remove-item 7 use-recent-week                                                                                ;; remove the last item from the list
+  set use-today? false                                                                                                             ;; reset the indicator
+  ; update the history of OD
+  if OD-today? [ set OD-count OD-count + 1 ]                                                                                       ;; update the count of ODs for the individual
+  ifelse OD-today? [ set OD-recent-week insert-item 0 OD-recent-week 1 ][set OD-recent-week insert-item 0 OD-recent-week 0 ]       ;; add a 0/1 to recent OD
+  set OD-recent-week remove-item 7 OD-recent-week                                                                                  ;; remove the last item from the list
+  set OD-today? false                                                                                                              ;; reset the indicator
+
+  set potency 0
+  set use-at 0
+  set use-in-isolation? 0
+  set rescued-today? false
+  set intent-to-use? false
+
+  set desire-today random-normal craving (craving / 3)
+  ;ifelse in-treatment? [set intent-to-use? false] [set intent-to-use? true] ;random-float 100 < desire-today]
+  set intent-to-use? true
+end
+
+;;; 1.2 a procedure that specifies how individuals acquire what they intend to consume on a given day
+to acquire-drugs
+    if intent-to-use? [
+    set use-today? true
+    set potency (craving / 100 ) * random-gamma ( 2.5 * 2.5 / 50) (1 / (50 / 2.5))
+  ]
+end
+
+;;; 1.3 a procedure that specifies how individuals consume drugs, and potentially OD
+to consume-drugs
+  ifelse use-today? [
+    set use-at selected-use-location
+    set use-in-isolation? selected-way-of-using
+
+    set tolerance min (list (tolerance + 2) 100)
+    set craving min (list ( craving + 1 + sum use-recent-week) 100)
+    set OD-today? check-for-overdose
+    if OD-today? [
+      set OD-counter-today OD-counter-today + 1
+      set OD-counter OD-counter + 1
+    ]
+  ][
+   ifelse in-treatment? [
+      set craving max (list (craving - 2) 1)
+      set tolerance max (list (tolerance - 1) 5)
+    ][
+      set craving max (list (craving - 1) 10)
+      set tolerance max (list (tolerance - 1) 5)]
+  ]
+end
+
+to-report selected-use-location
+  let answers (list "home" "public" "other")
+  let pairs (map list answers use-location-pref)
+  let loc first rnd:weighted-one-of-list pairs [ [p] -> last p ]
+  report loc
+end
+
+to-report selected-way-of-using
+  let isolated? random-float 100
+  ifelse isolated? < use-isolation-rate [report true][report false]
+end
+
+;;; sensitivity to OD is determined in this procedure, both the tolerance inflation factor (below) and the potency calculation in the the acquire drug procedure (1.2) have a huge impact on the daily number of overdoses
+to-report check-for-overdose
+  ;report ifelse-value potency > tolerance [ true ][ false ]
+  report ifelse-value random-float 1 < 0.000567945 [ true ][ false ]
+end
+
+;;;;;;;;;;;;;; 1.4) RESCUE ;;;;;;;;;;;;;;;;;;;;; (Mostly from the old model)
+
+to rescue-or-die
+  if OD-today? [
+    ifelse Rescue-event? [
+      set rescued-today? true
+      set rescue-counter rescue-counter + 1
+    ][
+      set OD-deaths-today OD-deaths-today + 1
+      ( ifelse
+        last-treated = 0 [set OD-death-of-untreated OD-death-of-untreated + 1]
+        last-treated > (ticks - 30) [set OD-death-of-recently-treated OD-death-of-recently-treated + 1]
+        []
+      )
+      set OD-deaths OD-deaths + 1
+      if during-burn-in? != true [
+        die
+      ]
+    ]
+  ]
+end
+
+to-report Rescue-event?
+  let rescued? FALSE
+  let EMS-available? FALSE
+  if any? EMS with [narcan-equiped?] in-radius 0.75 [ set EMS-available? TRUE ]
+  ifelse use-in-isolation? [
+    if use-at = "home" []
+    if use-at = "public" [
+      if EMS-available? and random 100 < 30 [
+        set rescued? true
+        set rescue-by-EMS rescue-by-EMS + 1
+      ]
+    ]
+    if use-at = "other"[
+      if EMS-available? and random 100 < 15 [
+        set rescued? true
+        set rescue-by-EMS rescue-by-EMS + 1
+      ]
+    ]
+  ][
+    if use-at = "home" [
+      if carrying-narcan? or random 100 < narcan-penetration [ set rescued? true
+        set rescue-by-friend rescue-by-friend + 1
+      ]
+      if EMS-available? [
+        set rescued? true
+        set rescue-by-EMS rescue-by-EMS + 1
+      ]
+    ]
+    if use-at = "public" [
+      ifelse carrying-narcan? and random 100 < 30 or random 100 < narcan-penetration [
+        set rescued? true
+        set rescue-by-friend rescue-by-friend + 1
+      ][
+        if EMS-available? [
+          set rescued? true
+          set rescue-by-EMS rescue-by-EMS + 1
+        ]
+      ]
+    ]
+    if use-at = "other"[
+      ifelse carrying-narcan? and random 100 < 15 or random 100 < narcan-penetration [
+        set rescued? true
+        set rescue-by-friend rescue-by-friend + 1
+      ][
+        if EMS-available? and random 100 < 50 [
+          set rescued? true
+          set rescue-by-EMS rescue-by-EMS + 1
+        ]
+      ]
+    ]
+  ]
+  ;report rescued?
+  ;let treatment-factor ifelse-value in-treatment? [
+  ;  ifelse-value treatment-type = "MOUD" [bup-death-reduction-factor ticks][met-death-reduction-factor ticks]
+  ;] [0]
+  ;set treatment-factor 0.59
+  ;let death-rate 0.15316
+  ;set death-prob death-prob * (1 - treatment-factor)
+  ;print (death-rate * (1 - treatment-factor))
+  ;print treatment-factor
+  ;report ifelse-value random-float 1 < (death-rate * (1 - treatment-factor)) [false] [true]
+  report ifelse-value random-float 1 < death-prob [false] [true]
+end
 
 
 ;;;;;;;;;;;;;; 2) TREATMENT ;;;;;;;;;;;;;;;;;;;;;
 
 
+;;; a procedure that specifies how individuals potentially seek to connect to treatment
+to seek-treatment
+;  ;; Roughly 20% of the population is ready to seek care at any time,
+;  ;; the daily rate of newly ready people is 2.8571% which should come from 80% non-ready folks, equaling 3.571% of that population
+;  ;; TO DO: This rate will need to be made conditional on use frequency, craving, drug type, etc !!!
+;  let default-linkage-rate .03571
+;  ;; For those in jail there could be a higher chance of becoming ready for change while in florida remains unchanged from our default
+;  let jail-factor 0
+;  ;; For those that interact with the care system there is an additional probability of starting to seek treatment
+;  ;; There's a 25% chance a visit results in a diagnosis, and 20% will be ready to change
+;  let care-linkage-factor .25 * .2
+;  ;; For those that interact with the Emergency Departments there is an additional probability of starting to seek treatment
+;  ;; There's a 50% chance a visit results in a diagnosis, and 20% will be ready to change
+;  let ed-linkage-factor .5 * .2
+;  ;; For those that experience a rescue event, there is an additional probability of starting to seek treatment
+;  ;; There's a 10% chance a rescue event will results in a desire to seek treatment
+;  let rescue-linkage-factor .1
+;
+;  ;; PART 1: Default
+;  let linkage-rate default-linkage-rate
+;  ;; PART 2: Jail interactions
+;  if in-jail? [set linkage-rate linkage-rate + jail-factor]
+;  ;; PART 3: Primary care interactions
+;  ;; based on 82% of adults having a yearly doctor visit, we determine the daily probability of a docs visits to be 0.00469
+;  if not in-jail? and random-float 1 < 0.00469 [set linkage-rate linkage-rate + care-linkage-rate]
+;  ;; PART 4: ED visits
+;  ;; based on 19% of adults having a yearly ED visit, we determine the daily probability of a ED visits to be 0.00058
+;  if not in-jail? and random-float 1 < 0.00058 [set linkage-rate linkage-rate + ed-linkage-rate]
+;  ;; PART 5: Rescue events
+;  if rescued-today? [set linkage-rate linkage-rate + rescue-linkage-rate]
+;
+;  if not in-treatment? and care-seeking? = FALSE and in-treatment? = FALSE [
+;    if random-float 1 < linkage-rate [
+;      set care-seeking? TRUE
+;    ]
+;  ]
+
+;  if not in-treatment? and care-seeking? = FALSE and in-treatment? = FALSE [
+;    ;; PART 1: Default
+;    if not in-jail? and random-float 100 < 3.571 [
+;      set care-seeking? TRUE
+;    ]
+;    ;; PART 2: Jail interactions
+;    if in-jail? and random-float 100 < (3.571 * 1) [
+;      set care-seeking? TRUE
+;    ]
+;    ; PART 3: Primary care interactions
+;    ;; For those that interact with the care system there is an additional probability of starting to seek treatment
+;    ;; based on 82% of adults having a yearly doctor visit, we determine the daily probability of a docs visits to be 0.00469
+;    if not care-seeking? and not in-jail? and random-float 1 < 0.00469 [
+;      ;; with a 25% chance a visit results in a diagnosis, and 20% will be ready to change
+;      if random 100 < 25 and random 100 < 20[
+;        set care-seeking? TRUE
+;      ]
+;    ]
+;    ; PART 4: ED visits
+;    ;; For those that interact with the Emergency Departments there is an additional probability of starting to seek treatment
+;    ;; based on 19% of adults having a yearly ED visit, we determine the daily probability of a ED visits to be 0.00058
+;    if not care-seeking? and not in-jail? and random-float 1 < 0.00058 [
+;      ;; with a 50% chance a visit results in a diagnosis, and 20% will be ready to change
+;      if random 100 < 50 and random 100 < 20 [
+;        set care-seeking? TRUE
+;      ]
+;    ]
+;    ;; PART 5: Rescue events
+;    ;; For those that experience a rescue event, there is an additional probability of starting to seek treatment
+;    if rescued-today? [
+;      ;; with a 10% chance a rescue event will results in a desire to seek treatment
+;      if random 100 < 10 [
+;        set care-seeking? TRUE
+;      ]
+;    ]
+;  ]
+
+  if care-seeking? = FALSE and in-treatment? = FALSE [
+    let linkage-rate 0.5
+    if intervention-scenario = 3 [set linkage-rate linkage-rate * 2]
+    if intervention-scenario = 4 [set linkage-rate 100]
+    if random-float 100 < linkage-rate [
+      set care-seeking? TRUE
+      set treatment-entry treatment-entry + 1
+    ]
+  ]
+end
+
+to get-in-treatment
+  ;; once intent to seeking care is obtained, get linked to care
+  if care-seeking? [
+    set treatment-type ifelse-value random-float 1 < .57 ["MOUD"]["MAT"]
+    if intervention-scenario >= 1 [set treatment-type "MAT"]
+    set my-treatment-provider rnd:weighted-one-of care-centers [(1 / distance myself)]
+    set my-treatment-distance [distance myself] of my-treatment-provider
+    if [treatment-capacity] of my-treatment-provider > 0 [
+      ask my-treatment-provider [ set treatment-capacity treatment-capacity - 1]
+    ]
+    set in-treatment? true
+    set care-seeking? false
+  ]
+end
+
+;; a procedure that specifies how individuals consume treatment, are retained or drop out, and adjusts their tolerance and cravings because of it
+to consume-treatment
+  if in-treatment? [
+    ;get-dose-MAT
+    set treatment-today? true
+    set last-treated ticks
+    set days-in-treatment days-in-treatment + 1
+    let treatment-factor ifelse-value in-treatment? [
+      ifelse-value treatment-type = "MOUD" [bup-death-reduction-factor ticks][met-death-reduction-factor ticks]
+    ] [0]
+    set death-prob death-prob * (1 - treatment-factor)
+    potentially-drop-out
+  ]
+end
+
+to potentially-drop-out
+  let drop-out-chance drop-out-prob days-in-treatment
+  if intervention-scenario >= 2 [set drop-out-chance 0]
+  if random-float 1 < drop-out-chance [
+    set in-treatment? false
+    set days-in-treatment 0
+    set treatment-today? false
+    ask my-treatment-provider [ set treatment-capacity treatment-capacity + 1]
+    set my-treatment-provider nobody
+     set death-prob default-death-rate
+  ]
+end
+
+to-report bup-death-reduction-factor [day]
+  let a 0.38
+  let c 0.072434
+  report a * c * Exp (- c * day)
+end
+
+to-report met-death-reduction-factor [day]
+  let a 0.814522
+  let c 0.0035305
+  report a * c * Exp (- c * day)
+end
+
+to-report drop-out-prob [day]
+  ;; Returns the probability of drop out from treatment for given day
+  ;; Fitted to operation par data
+  ;; TO DO: Might need revision as the probs do not add up to 1
+  let a 0.00860059
+  let b 0.201683
+  let c 0.116011
+  report a + b * exp (- c * day)
+end
+
 ;;;;;;;;;;;;;; 3) INTERVENTIONS ;;;;;;;;;;;;;;;;;;;;;
 
+;; Intervention-scenario values
+;; 0: Baseline (no interventions)
+;; 1: All treatment types are MAT
+;; 2: 1 + No drop-out
+;; 3: 2 + Double treatment linkage rate
+;; 4: 2 + Everyone is in treatment
 @#$#@#$#@
 GRAPHICS-WINDOW
 295
@@ -417,36 +859,11 @@ GRAPHICS-WINDOW
 ticks
 30.0
 
-SLIDER
-911
-174
-1101
-207
-percent-narcan-added
-percent-narcan-added
-0
-100
-25.0
-1
-1
-%
-HORIZONTAL
-
-CHOOSER
-1435
-21
-1628
-66
-boundaries
-boundaries
-"county" "cities"
-1
-
 SWITCH
-1435
-68
-1629
-101
+20
+295
+214
+328
 show-boundaries?
 show-boundaries?
 1
@@ -454,10 +871,10 @@ show-boundaries?
 -1000
 
 SWITCH
-1435
-102
-1629
-135
+20
+330
+214
+363
 care-centers-visible?
 care-centers-visible?
 0
@@ -465,23 +882,12 @@ care-centers-visible?
 -1000
 
 SWITCH
-1435
-138
-1629
-171
+20
+365
+214
+398
 narcan-providers-visible?
 narcan-providers-visible?
-0
-1
--1000
-
-SWITCH
-911
-212
-1102
-245
-add-location?
-add-location?
 0
 1
 -1000
@@ -502,10 +908,10 @@ NIL
 HORIZONTAL
 
 SLIDER
-1106
-127
-1311
-160
+1115
+80
+1320
+113
 isolated-user-percentage
 isolated-user-percentage
 0
@@ -517,10 +923,10 @@ isolated-user-percentage
 HORIZONTAL
 
 SWITCH
-1434
-177
-1570
-210
+20
+470
+215
+503
 people-visible?
 people-visible?
 1
@@ -530,7 +936,7 @@ people-visible?
 BUTTON
 20
 100
-83
+85
 133
 NIL
 setup
@@ -545,10 +951,10 @@ NIL
 1
 
 SWITCH
-1576
-177
-1699
-210
+20
+435
+215
+468
 EMS-visible?
 EMS-visible?
 1
@@ -556,10 +962,10 @@ EMS-visible?
 -1000
 
 CHOOSER
-911
-249
-1103
-294
+1115
+230
+1320
+275
 narcan-boxes?
 narcan-boxes?
 "none" "random" "targeted"
@@ -568,7 +974,7 @@ narcan-boxes?
 BUTTON
 95
 100
-158
+160
 133
 NIL
 go
@@ -583,10 +989,10 @@ NIL
 1
 
 SWITCH
-1106
-163
-1311
-196
+1115
+116
+1320
+149
 leave-behind-narcan?
 leave-behind-narcan?
 1
@@ -594,10 +1000,10 @@ leave-behind-narcan?
 -1000
 
 SLIDER
-1106
-201
-1311
-234
+1115
+154
+1320
+187
 nr-narcan-boxes
 nr-narcan-boxes
 1
@@ -609,10 +1015,10 @@ NIL
 HORIZONTAL
 
 SLIDER
-1106
-238
-1312
-271
+1115
+191
+1321
+224
 treatment-narcan-supply-likelihood
 treatment-narcan-supply-likelihood
 0
@@ -623,23 +1029,13 @@ treatment-narcan-supply-likelihood
 %
 HORIZONTAL
 
-CHOOSER
-910
-127
-1101
-172
-MAT-set
-MAT-set
-"MAT-only" "MAT-extra25-cap" "MAT-extra50-cap" "MAT-extra100-cap" "MAT-and-BUP25" "MAT-and-BUP50" "MAT-and-BUP100" "MAT-extra25-loc" "MAT-extra50-loc" "MAT-extra100-loc" "intervention combo 7"
-10
-
 BUTTON
 20
 140
 160
 173
 go-1year
-setup\nrepeat 365 + burn-in-time [go]
+setup\nrepeat 365 [go]
 NIL
 1
 T
@@ -650,26 +1046,81 @@ NIL
 NIL
 1
 
-CHOOSER
-910
-78
-1312
-123
-Intervention-package
-Intervention-package
-"0" "1" "2" "3" "4" "5" "6" "7" "8" "9"
-0
-
 SWITCH
-1445
-275
-1652
-308
+20
+505
+215
+538
 show-background-map?
 show-background-map?
 1
 1
 -1000
+
+SWITCH
+20
+400
+215
+433
+red-box-visible?
+red-box-visible?
+1
+1
+-1000
+
+SWITCH
+20
+220
+215
+253
+burn-in?
+burn-in?
+0
+1
+-1000
+
+MONITOR
+1335
+130
+1440
+175
+NIL
+OD-deaths
+17
+1
+11
+
+MONITOR
+1335
+80
+1440
+125
+NIL
+OD-counter
+17
+1
+11
+
+MONITOR
+1335
+180
+1440
+225
+# in treatment
+count people with [in-treatment?]
+17
+1
+11
+
+CHOOSER
+895
+80
+1100
+125
+intervention-scenario
+intervention-scenario
+0 1 2 3 4
+0
 
 @#$#@#$#@
 ## WHAT IS IT?
@@ -1095,77 +1546,74 @@ NetLogo 6.4.0
       <value value="5"/>
     </enumeratedValueSet>
   </experiment>
-  <experiment name="Intervention combinations" repetitions="100" runMetricsEveryStep="false">
+  <experiment name="max-treatment-exp" repetitions="100" runMetricsEveryStep="true">
     <setup>setup</setup>
     <go>go</go>
-    <timeLimit steps="715"/>
+    <timeLimit steps="365"/>
+    <metric>count people</metric>
     <metric>count people with [treatment-today?]</metric>
     <metric>count people with [use-today?]</metric>
     <metric>count people with [intent-to-use?]</metric>
     <metric>count people with [last-treated = 0]</metric>
-    <metric>mean [tolerance] of people</metric>
-    <metric>mean [craving] of people</metric>
     <metric>mean [days-in-treatment] of people</metric>
     <metric>mean [days-in-treatment] of people with [in-treatment?]</metric>
     <metric>mean [my-treatment-distance] of people with [in-treatment?]</metric>
-    <metric>OD-counter</metric>
     <metric>rescue-counter</metric>
     <metric>rescue-by-EMS</metric>
     <metric>rescue-by-friend</metric>
-    <metric>OD-deaths</metric>
     <metric>OD-death-of-untreated</metric>
     <metric>OD-death-of-recently-treated</metric>
     <metric>treatment-utilization</metric>
     <metric>total-treatment-capacity</metric>
-    <metric>narcan-penetration</metric>
+    <metric>OD-counter</metric>
+    <metric>OD-deaths</metric>
+    <metric>treatment-entry</metric>
+    <metric>in-treatment-total</metric>
+    <metric>in-treatment-today</metric>
+    <metric>in-treatment-180</metric>
+    <metric>in-treatment-60</metric>
     <enumeratedValueSet variable="nr-narcan-boxes">
       <value value="200"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="intervention-scenario">
+      <value value="0"/>
+      <value value="1"/>
+      <value value="2"/>
+      <value value="3"/>
+      <value value="4"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="burn-in?">
+      <value value="true"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="EMS-visible?">
       <value value="false"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="population">
-      <value value="18000"/>
+      <value value="20000"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="show-boundaries?">
       <value value="false"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="isolated-user-percentage">
-      <value value="50"/>
+      <value value="30"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="narcan-boxes?">
-      <value value="&quot;none&quot;"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="percent-narcan-added">
-      <value value="0"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="boundaries">
-      <value value="&quot;cities&quot;"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="Intervention-package">
-      <value value="&quot;0&quot;"/>
-      <value value="&quot;1&quot;"/>
-      <value value="&quot;2&quot;"/>
-      <value value="&quot;3&quot;"/>
-      <value value="&quot;4&quot;"/>
-      <value value="&quot;5&quot;"/>
-      <value value="&quot;6&quot;"/>
-      <value value="&quot;7&quot;"/>
+      <value value="&quot;random&quot;"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="leave-behind-narcan?">
       <value value="false"/>
     </enumeratedValueSet>
-    <enumeratedValueSet variable="narcan-providers-visible?">
-      <value value="true"/>
+    <enumeratedValueSet variable="show-background-map?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="red-box-visible?">
+      <value value="false"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="care-centers-visible?">
       <value value="true"/>
     </enumeratedValueSet>
-    <enumeratedValueSet variable="MAT-set">
-      <value value="&quot;MAT-only&quot;"/>
-    </enumeratedValueSet>
-    <enumeratedValueSet variable="add-location?">
-      <value value="false"/>
+    <enumeratedValueSet variable="narcan-providers-visible?">
+      <value value="true"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="people-visible?">
       <value value="false"/>
