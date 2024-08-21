@@ -150,14 +150,22 @@ to setup
 end
 
 to setup-map
-  gis:load-coordinate-system "regional_input_files/Pinellas-County-FL/pinellas_gis/pinellas_census_tract.prj"
-  set gis-dataset gis:load-dataset "regional_input_files/Pinellas-County-FL/pinellas_gis/pinellas_census_tract.shp"
+  if county = "Pinellas" [
+    gis:load-coordinate-system "regional_input_files/Pinellas-County-FL/pinellas_gis/pinellas_census_tract.prj"
+    set gis-dataset gis:load-dataset "regional_input_files/Pinellas-County-FL/pinellas_gis/pinellas_census_tract.shp"
+  ]
+  if county = "Santa Clara" [
+    gis:load-coordinate-system "regional_input_files/SantaClara-County-CA/santaclara_gis/santaclara_census_tract.prj"
+    set gis-dataset gis:load-dataset "regional_input_files/SantaClara-County-CA/santaclara_gis/santaclara_census_tract.shp"
+  ]
   gis:set-world-envelope gis:envelope-of gis-dataset
   if show-background-map? [
     gis:import-wms-drawing "https://ows.terrestris.de/osm/service?" "EPSG:4326" "OSM-WMS" 0
   ]
-  gis:set-drawing-color magenta
-  gis:draw gis-dataset 1
+  if show-boundaries? [
+    gis:set-drawing-color magenta
+    gis:draw gis-dataset 1
+  ]
 end
 
 to read-in-data
@@ -167,8 +175,13 @@ to read-in-data
 end
 
 to read-demographics-data
-  ;; obtained from https://data.census.gov/table?t=Age+and+Sex&g=040XX00US12_050XX00US12103$1400000&d=DEC+Demographic+Profile
-  file-open "regional_input_files/Pinellas-County-FL/cleaned-pinellas-demographics-by-census-tract.csv"
+  if county = "Pinellas" [
+    ;; obtained from https://data.census.gov/table?t=Age+and+Sex&g=040XX00US12_050XX00US12103$1400000&d=DEC+Demographic+Profile
+    file-open "regional_input_files/Pinellas-County-FL/cleaned-pinellas-demographics-by-census-tract.csv"
+  ]
+  if county = "Santa Clara" [
+
+  ]
   set ct-index but-first csv:from-row file-read-line
   set ct-index replace-item 0 ct-index 0
   ;print ct-index
@@ -204,11 +217,19 @@ to read-demographics-data
 end
 
 to read-care-center-data
-  file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_care_providers_PinellasCounty.csv"
+  if county = "Pinellas" [
+    file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_care_providers_PinellasCounty.csv"
+  ]
+  if county = "Santa Clara" [
+    file-open "regional_input_files/SantaClara-County-CA/care_providers/List_of_care_providers_SantaClaraCounty.csv"
+  ]
   let row file-read-line
   set care-center-data []
   while [ not file-at-end? ] [
-    set row sublist (csv:from-row file-read-line) 0 11
+;    set row csv:from-row file-read-line
+;    print row
+;    set row sublist row 0 11
+    set row sublist (csv:from-row file-read-line) 0 12
     set care-center-data lput row care-center-data
   ]
   ;print care-center-data
@@ -230,7 +251,11 @@ to setup-care-centers
   foreach care-center-data [ data-row ->
     create-care-centers 1 [
       let loc gis:project-lat-lon item 0 data-row item 1 data-row
-      setxy item 0 loc item 1 loc
+      ifelse not empty? loc [
+        setxy item 0 loc item 1 loc
+      ] [
+        die
+      ]
 
       set OTP?       item 2 data-row
       set detox?     item 3 data-row
@@ -242,7 +267,8 @@ to setup-care-centers
       set emergency? item 9 data-row
       set treatment-capacity item 10 data-row
 
-      set color get-care-color data-row
+      ;set color get-care-color data-row
+      ifelse member? "bup" data-row [set color green] [set color red]
       set shape "house"
       set size .5
       if not care-centers-visible? [hide-turtle]
@@ -825,10 +851,56 @@ to-report drop-out-prob [day]
   ;; Returns the probability of drop out from treatment for given day
   ;; Fitted to operation par data
   ;; TO DO: Might need revision as the probs do not add up to 1
-  let a 0.00860059
-  let b 0.201683
+  let a 1.73849
+  let b 0.00860059
   let c 0.116011
-  report a + b * exp (- c * day)
+  (ifelse
+    dropout-scenario = 0 [
+      set a 1.73849
+      set b 0.00860059
+      set c 0.116011
+    ]
+    dropout-scenario = 1 [
+      set a 0.869244
+      set b 0.00430029
+      set c 0.116011
+    ]
+    dropout-scenario = 2 [
+      set a 1.67333
+      set b 0.00740684
+      set c 0.0653854
+    ]
+    dropout-scenario = 3 [
+      set a 1.53836
+      set b 0.00619112
+      set c 0.0346814
+    ]
+    dropout-scenario = 4 [
+      set a 1.11407
+      set b 0.00700484
+      set c 0.0525983
+    ] [
+      set a 0.907409
+      set b 0.00624848
+      set c 0.0343686
+  ])
+  let prob b + a * c * exp (- c * day)
+
+  if dropout-scenario = 4[
+    ifelse day <= 7 [
+      set prob 0
+    ] [
+      set prob b + a * c * exp (- c * (day - 7))
+    ]
+  ]
+  if dropout-scenario = 5 [
+    ifelse day <= 14 [
+      set prob 0
+    ] [
+      set prob b + a * c * exp (- c * (day - 14))
+    ]
+  ]
+  report max list 0 prob
 end
 
 ;;;;;;;;;;;;;; 3) INTERVENTIONS ;;;;;;;;;;;;;;;;;;;;;
@@ -874,7 +946,7 @@ SWITCH
 328
 show-boundaries?
 show-boundaries?
-1
+0
 1
 -1000
 
@@ -902,9 +974,9 @@ narcan-providers-visible?
 
 SLIDER
 20
-25
+70
 192
-58
+103
 population
 population
 5000
@@ -943,9 +1015,9 @@ people-visible?
 
 BUTTON
 20
-100
+130
 85
-133
+163
 NIL
 setup
 NIL
@@ -981,9 +1053,9 @@ narcan-boxes?
 
 BUTTON
 95
-100
+130
 160
-133
+163
 NIL
 go
 T
@@ -1039,9 +1111,9 @@ HORIZONTAL
 
 BUTTON
 20
-140
+170
 160
-173
+203
 go-1year
 setup\nrepeat 365 [go]
 NIL
@@ -1078,12 +1150,12 @@ red-box-visible?
 
 SWITCH
 20
-220
+240
 215
-253
+273
 burn-in?
 burn-in?
-0
+1
 1
 -1000
 
@@ -1128,6 +1200,26 @@ CHOOSER
 intervention-scenario
 intervention-scenario
 0 1 2 3 4 5 6
+0
+
+CHOOSER
+20
+15
+190
+60
+county
+county
+"Pinellas" "Santa Clara"
+0
+
+CHOOSER
+895
+135
+1100
+180
+dropout-scenario
+dropout-scenario
+0 1 2 3 4 5
 0
 
 @#$#@#$#@
@@ -1738,6 +1830,86 @@ NetLogo 6.4.0
     <enumeratedValueSet variable="intervention-scenario">
       <value value="5"/>
       <value value="6"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="burn-in?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="EMS-visible?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="population">
+      <value value="20000"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="show-boundaries?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="isolated-user-percentage">
+      <value value="30"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="narcan-boxes?">
+      <value value="&quot;random&quot;"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="leave-behind-narcan?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="show-background-map?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="red-box-visible?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="care-centers-visible?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="narcan-providers-visible?">
+      <value value="true"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="people-visible?">
+      <value value="false"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="treatment-narcan-supply-likelihood">
+      <value value="10"/>
+    </enumeratedValueSet>
+  </experiment>
+  <experiment name="dropout-exp" repetitions="100" runMetricsEveryStep="true">
+    <setup>setup</setup>
+    <go>go</go>
+    <timeLimit steps="365"/>
+    <metric>count people</metric>
+    <metric>count people with [treatment-today?]</metric>
+    <metric>count people with [use-today?]</metric>
+    <metric>count people with [intent-to-use?]</metric>
+    <metric>count people with [last-treated = 0]</metric>
+    <metric>mean [days-in-treatment] of people</metric>
+    <metric>mean [days-in-treatment] of people with [in-treatment?]</metric>
+    <metric>mean [my-treatment-distance] of people with [in-treatment?]</metric>
+    <metric>rescue-counter</metric>
+    <metric>rescue-by-EMS</metric>
+    <metric>rescue-by-friend</metric>
+    <metric>OD-death-of-untreated</metric>
+    <metric>OD-death-of-recently-treated</metric>
+    <metric>treatment-utilization</metric>
+    <metric>total-treatment-capacity</metric>
+    <metric>OD-counter</metric>
+    <metric>OD-deaths</metric>
+    <metric>treatment-entry</metric>
+    <metric>in-treatment-total</metric>
+    <metric>in-treatment-today</metric>
+    <metric>in-treatment-180</metric>
+    <metric>in-treatment-60</metric>
+    <enumeratedValueSet variable="nr-narcan-boxes">
+      <value value="200"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="intervention-scenario">
+      <value value="0"/>
+    </enumeratedValueSet>
+    <enumeratedValueSet variable="dropout-scenario">
+      <value value="0"/>
+      <value value="1"/>
+      <value value="2"/>
+      <value value="3"/>
+      <value value="4"/>
+      <value value="5"/>
     </enumeratedValueSet>
     <enumeratedValueSet variable="burn-in?">
       <value value="true"/>
