@@ -1,0 +1,2224 @@
+<?xml version="1.0" encoding="utf-8"?>
+<model version="NetLogo 7.0.0" snapToGrid="true">
+  <code><![CDATA[;; goal of this model is to show the long term impact (or lack thereof) of increased narcan distribution
+
+extensions [csv rnd gis fp]
+
+globals[
+  ;; input data arrays
+  gis-dataset
+  ct-index
+  ct-pop-data
+  ct-sex-data
+  ct-age-data
+  ct-race-data
+  care-center-data
+  narcan-dist-data
+
+  default-death-rate
+
+  burn-in-time
+  during-burn-in?
+
+  ;; output metrics
+  rescue-counter
+  rescue-by-EMS
+  rescue-by-friend
+  OD-counter
+  OD-counter-today
+  OD-deaths
+  OD-deaths-today
+  OD-death-of-untreated
+  OD-death-of-recently-treated
+  total-narcan-available
+  total-treatment-capacity
+  treatment-utilization
+  treatment-entry
+  in-treatment-total
+  in-treatment-today
+  in-treatment-180
+  in-treatment-60
+  narcan-penetration
+]
+
+breed [people person]
+breed [care-centers care-center]
+breed [narcan-distributors narcan-distributor]
+breed [ EMS EMSP]
+breed [red-boxes red-box]
+
+;; assigning characteristics to the different agents
+people-own [
+  ;; Demographics
+  census-tract
+  age                              ; the age of the individual in years
+  race                             ; the race of the individual, categorical it will either be ( )
+  gender                           ; a indicator if the gender of the individual
+  region                           ; indicator of the region one lives in
+  residence-location
+  in-jail?
+
+  ;; Opioid use related
+  craving
+  tolerance
+  potency
+  use-location-pref
+  use-isolation-rate
+  use-recent-week
+  desire-today
+  use-today?
+  intent-to-use?
+  use-in-isolation?
+  use-at
+  rescued-today?
+  death-prob
+
+  ;; treatment related
+  care-seeking-duration
+  care-seeking?
+  personal-motivation
+  treatment-today?
+  last-treated
+  in-treatment?
+  days-in-treatment
+  treatment-options
+  my-treatment-provider
+  treatment-distances
+  my-treatment-distance
+  treatment-type
+
+  ;; OD related
+  OD-today?
+  OD-count
+  OD-recent-week
+
+  ;; narcan related
+  carrying-narcan?
+  aware-of-narcan?
+  narcan-closeby?
+  narcan-available?
+
+  my-dropout
+]
+
+care-centers-own[
+  treatment-capacity
+  current-usage
+  waitlist
+  narcan-equiped?
+  supply
+
+  OTP?
+  detox?
+  res?
+  OP?
+  FQHC?
+  SPC?
+  PCP?
+  emergency?
+]
+
+narcan-distributors-own [
+  supply
+]
+
+EMS-own[
+  base-location
+  census-tract
+  narcan-equiped?
+]
+
+red-boxes-own [
+  supply
+]
+
+
+;;;;;;;;;;;;;; 0) SETUP ;;;;;;;;;;;;;;;;;;;;;
+
+to setup
+  clear-all
+  read-in-data
+  setup-map
+  setup-pop
+  setup-care-centers
+  setup-narcan-distributors
+  setup-EMS
+  distribute-narcan
+  init-metrics
+  set default-death-rate 0.15316
+  reset-ticks
+  if burn-in? [
+    set burn-in-time 350
+    do-burn-in
+  ]
+end
+
+to setup-map
+  if county = "Pinellas" [
+    gis:load-coordinate-system "regional_input_files/Pinellas-County-FL/pinellas_gis/pinellas_census_tract.prj"
+    set gis-dataset gis:load-dataset "regional_input_files/Pinellas-County-FL/pinellas_gis/pinellas_census_tract.shp"
+  ]
+  if county = "Santa Clara" [
+    gis:load-coordinate-system "regional_input_files/SantaClara-County-CA/santaclara_gis/santaclara_census_tract.prj"
+    set gis-dataset gis:load-dataset "regional_input_files/SantaClara-County-CA/santaclara_gis/santaclara_census_tract.shp"
+  ]
+  gis:set-world-envelope gis:envelope-of gis-dataset
+  if show-background-map? [
+    gis:import-wms-drawing "https://ows.terrestris.de/osm/service?" "EPSG:4326" "OSM-WMS" 0
+  ]
+  if show-boundaries? [
+    gis:set-drawing-color magenta
+    gis:draw gis-dataset 1
+  ]
+end
+
+to read-in-data
+  read-demographics-data
+  read-care-center-data
+  read-narcan-dist-data
+end
+
+to read-demographics-data
+  if county = "Pinellas" [
+    ;; obtained from https://data.census.gov/table?t=Age+and+Sex&g=040XX00US12_050XX00US12103$1400000&d=DEC+Demographic+Profile
+    file-open "regional_input_files/Pinellas-County-FL/cleaned-pinellas-demographics-by-census-tract.csv"
+  ]
+  if county = "Santa Clara" [
+    stop
+  ]
+  set ct-index but-first csv:from-row file-read-line
+  set ct-index replace-item 0 ct-index 0
+  ;print ct-index
+  let row file-read-line
+  set ct-pop-data (but-first csv:from-row file-read-line)
+  ;print ct-pop-data
+  repeat 24 [set row file-read-line]
+  set ct-sex-data []
+  set ct-sex-data lput (but-first csv:from-row file-read-line) ct-sex-data
+  ;print ct-sex-data
+  let male-ct-age-data []
+  repeat 18 [set male-ct-age-data lput (but-first csv:from-row file-read-line) male-ct-age-data]
+  ;print male-ct-age-data
+  repeat 6 [set row file-read-line]
+  set ct-sex-data lput (but-first csv:from-row file-read-line) ct-sex-data
+  ;print item 1 ct-sex-data
+  let female-ct-age-data []
+  repeat 18 [set female-ct-age-data lput (but-first csv:from-row file-read-line) female-ct-age-data]
+  ;print female-ct-age-data
+  repeat 34 [set row file-read-line]
+  let hisp-ct-race-data but-first csv:from-row file-read-line
+  ;print hisp-ct-race-data
+  repeat 8 [set row file-read-line]
+  let white-ct-race-data but-first csv:from-row file-read-line
+  ;print white-ct-race-data
+  let aa-ct-race-data but-first csv:from-row file-read-line
+  ;print aa-ct-race-data
+  let other-ct-race-data map [i -> (item i ct-pop-data) - ((item i hisp-ct-race-data) + (item i white-ct-race-data) + (item i aa-ct-race-data)) ] range length ct-pop-data
+  ;print other-ct-race-data
+  file-close-all
+  set ct-age-data list male-ct-age-data female-ct-age-data
+  set ct-race-data (list aa-ct-race-data white-ct-race-data hisp-ct-race-data other-ct-race-data)
+end
+
+to read-care-center-data
+  if county = "Pinellas" [
+    file-open "regional_input_files/Pinellas-County-FL/care_providers/List_of_care_providers_PinellasCounty.csv"
+  ]
+  if county = "Santa Clara" [
+    file-open "regional_input_files/SantaClara-County-CA/care_providers/List_of_care_providers_SantaClaraCounty_updated.csv"
+  ]
+  let row file-read-line
+  set care-center-data []
+  while [ not file-at-end? ] [
+;    set row csv:from-row file-read-line
+;    print row
+;    set row sublist row 0 11
+    set row sublist (csv:from-row file-read-line) 0 12
+    set care-center-data lput row care-center-data
+  ]
+  ;print care-center-data
+  file-close-all
+end
+
+to read-narcan-dist-data
+  file-open "regional_input_files/Pinellas-County-FL/NarcanProviders.csv"
+  set narcan-dist-data []
+  let row file-read-line
+  while [not file-at-end?][
+    set row csv:from-row file-read-line
+    set narcan-dist-data  lput but-last row narcan-dist-data
+  ]
+  file-close-all
+end
+
+to setup-care-centers
+  foreach care-center-data [ data-row ->
+    create-care-centers 1 [
+      let loc gis:project-lat-lon item 0 data-row item 1 data-row
+      ifelse not empty? loc [
+        setxy item 0 loc item 1 loc
+      ] [
+        die
+      ]
+
+      set OTP?       item 2 data-row
+      set detox?     item 3 data-row
+      set res?       item 4 data-row
+      set OP?        item 5 data-row
+      set FQHC?      item 6 data-row
+      set SPC?       item 7 data-row
+      set PCP?       item 8 data-row
+      set emergency? item 9 data-row
+      set treatment-capacity item 10 data-row
+
+      ;set color get-care-color data-row
+      ifelse member? "bup" data-row [set color green] [set color red]
+      set shape "house"
+      set size .5
+      if not care-centers-visible? [hide-turtle]
+    ]
+  ]
+  set total-treatment-capacity sum [treatment-capacity] of care-centers
+end
+
+to-report get-care-color [ row ]
+  let c filter [r -> r != 0] (map [i -> ifelse-value ((item i row) = 1) [item (i + 3) base-colors][0]] (range 2 10))
+  report ifelse-value (empty? c) [red] [item 0 c]
+end
+
+to setup-narcan-distributors
+  if county = "Pinellas" [
+    foreach narcan-dist-data [ data-row ->
+      create-narcan-distributors 1 [
+        let loc gis:project-lat-lon item 0 data-row item 1 data-row
+        setxy item 0 loc item 1 loc
+        set supply item 2 data-row
+        
+        set color green
+        set shape "pentagon"
+        set size 0.5
+        if not narcan-providers-visible? [hide-turtle]
+      ]
+    ]
+    set total-narcan-available sum [supply] of narcan-distributors
+  ]
+end
+
+;;; setup of the emergency services in the simulation
+to setup-EMS
+  if county = "Pinellas" [
+    create-EMS round population / 100 [
+      set shape "car"
+      set color white
+      set size 0.5
+      let vector-feature nobody
+      ;; TO DO: A cleaner implementation without while loop
+      while [vector-feature = nobody] [
+        set census-tract assign-ct
+        set vector-feature gis:find-one-feature gis-dataset "NAME" (word census-tract)
+      ]
+      let loc gis:location-of gis:random-point-inside vector-feature
+      setxy (item 0 loc) (item 1 loc)
+      set Base-location patch-here
+      if not EMS-visible? [hide-turtle]
+    ]
+  ]
+end
+
+;;; setup the distribution of narcan among EMS and red-boxes
+to distribute-narcan
+  ask EMS [
+    ifelse random 1000 < 900 [ set narcan-equiped? true ] [ set narcan-equiped? false ]
+  ]
+  if narcan-boxes? = "random" [
+    create-red-boxes nr-narcan-boxes [
+      set shape "box"
+      set size 0.5
+      set color red
+      set supply 25
+      let loc gis:location-of gis:random-point-inside one-of gis:feature-list-of gis-dataset
+      setxy (item 0 loc) (item 1 loc)
+      if not red-box-visible? [hide-turtle]
+    ]
+  ]
+  if narcan-boxes? = "targeted" [
+    print "Error: not implemented"
+    stop
+  ]
+end
+
+
+;;; 0.2 setup of the individuals in the simulation
+
+to setup-pop
+  if county = "Pinellas" [
+    create-people population [
+      ;demographics
+      set census-tract assign-ct
+      ;print census-tract
+      let ct-num item 0 fp:find-indices [x -> x = census-tract] ct-index
+      set gender assign-sex ct-num
+      ;print gender
+      set age assign-age ct-num
+      ;print age
+      set race assign-race ct-num
+      ;print race
+      
+      ;use parameters
+      set craving random-float 100
+      set tolerance personal-tolerance
+      set use-location-pref personal-location-pref
+      set use-isolation-rate personal-isolation-rate
+      set use-recent-week  map [-> use-flip] range 7
+      set use-today? true ;use-flip
+      set death-prob default-death-rate
+      
+      ; treatment parameters
+      set treatment-today? false
+      set in-treatment? false
+      set care-seeking-duration 0
+      set care-seeking? false
+      set personal-motivation random 100
+      
+      ;OD parameters
+      set OD-today? false
+      set OD-count 0
+      set OD-recent-week (list 0 0 0 0 0 0 0 )
+      
+      ; narcan parameters
+      set carrying-narcan? false
+      ;; commented for now bc in-radius takes too much time
+      ;set narcan-closeby? any? red-boxes in-radius 0.5 or any? narcan-distributors in-radius 0.5
+      ;set narcan-available?  any? red-boxes in-radius 1 or any? narcan-distributors in-radius 1
+      set aware-of-narcan? false
+      
+      ;visualization
+      set size 0.5
+      set shape "person"
+      set color blue
+      if not people-visible? [hide-turtle]
+    ]
+    place-population
+  ]
+end
+
+to-report assign-ct
+  let zip-list fp:zip (but-first ct-pop-data) (but-first ct-index)
+  report last rnd:weighted-one-of-list zip-list [[p] -> first p]
+end
+
+to-report assign-sex [ct-num]
+  let prob-list map [i -> item ct-num item i ct-sex-data] range 2
+  ;print prob-list
+  let zip-list fp:zip prob-list ["MALE" "FEMALE"]
+  report last rnd:weighted-one-of-list zip-list [[p] -> first p]
+end
+
+to-report assign-age [ct-num]
+  let age-groups get-age-groups
+  let sex-num ifelse-value gender = "MALE" [0][1]
+  let prob-list map [i -> item ct-num item i item sex-num ct-age-data] range length age-groups
+  let zip-list fp:zip prob-list age-groups
+  let age-range last rnd:weighted-one-of-list zip-list [[p] -> first p]
+  report (item 0 age-range) + random ((item 1 age-range) - (item 0 age-range) + 1)
+end
+
+to-report get-age-groups
+  let age-groups []
+  let age-count 0
+  foreach range 17 [i ->
+    let lb age-count
+    foreach range 4 [j ->
+      set age-count age-count + 1
+    ]
+    let ub age-count
+    set age-groups lput (list lb ub) age-groups
+    set age-count age-count + 1
+  ]
+  set age-groups lput (list 85 100) age-groups
+  report age-groups
+end
+
+to-report assign-race [ct-num]
+  let prob-list map [i -> item ct-num item i ct-race-data] range 4
+  ;print prob-list
+  let zip-list fp:zip prob-list ["AA" "WHITE" "HISP" "OTHER"]
+  report last rnd:weighted-one-of-list zip-list [[p] -> first p]
+end
+
+to place-population
+  foreach gis:feature-list-of gis-dataset [vector-feature ->
+    let ct-name gis:property-value vector-feature "NAME"
+    ask people with [(word census-tract) = ct-name] [
+      ;print who
+      let loc gis:location-of gis:random-point-inside vector-feature
+      set xcor item 0 loc
+      set ycor item 1 loc
+    ]
+  ]
+end
+
+to-report personal-tolerance
+  report random-float 100
+end
+
+to-report personal-location-pref
+  let pref (list 0 0 0)
+  ;;; the following rates should be based on observed death data, while this might not be representative of where people use, it is the only data we have relating to use
+  set pref replace-item 0 pref ((50 + random 50) - random 50) ;; 50% chance of prefering to use at home
+  set pref replace-item 1 pref ((30 + random 30) - random 30) ;; 30% chance of prefering to use in public space
+  set pref replace-item 2 pref ((20 + random 20) - random 20) ;; 20% chance of prefering to use in other location
+  report pref
+end
+
+to-report personal-isolation-rate
+  let perc isolated-user-percentage
+  report random-normal isolated-user-percentage (0.2 * isolated-user-percentage )
+end
+
+to-report use-flip
+  report ifelse-value random 100 < 30 [TRUE][FALSE]
+end
+
+to init-metrics
+  set rescue-counter 0
+  set rescue-by-EMS 0
+  set rescue-by-friend 0
+  set OD-deaths 0
+  set OD-counter 0
+  set OD-death-of-recently-treated 0
+  set OD-death-of-untreated 0
+  set treatment-entry 0
+  set in-treatment-total 0
+  set in-treatment-today 0
+  set in-treatment-180 0
+  set in-treatment-60  0
+end
+
+to do-burn-in
+  let temp-int-scenario intervention-scenario
+  let temp-dropout-scenario dropout-scenario
+  set during-burn-in? true
+  repeat burn-in-time [
+    set intervention-scenario 0
+    set dropout-scenario  0
+    go
+  ]
+  set intervention-scenario temp-int-scenario
+  set dropout-scenario temp-dropout-scenario
+  set during-burn-in? false
+  init-metrics
+  reset-ticks
+end
+
+;;;;;;;;;;;;;; GO PROCEDURES ;;;;;;;;;;;;;;;;;;;;;
+
+
+to go
+  if ticks = 365 [ stop ]
+  reset-daily-counts
+  ask people [
+    ;; drug usage
+    determine-use
+    acquire-drugs
+    consume-drugs
+    ;; rescue
+    rescue-or-die
+    ;; treatment
+    seek-treatment
+    get-in-treatment
+    consume-treatment
+    ;; interventions
+  ]
+  tick
+end
+
+
+;;;;;;;;;;;;;; 1) DRUG USAGE ;;;;;;;;;;;;;;;;;;;;; (Mostly from the old model)
+
+to reset-daily-counts
+  set OD-counter-today 0
+  set OD-deaths-today 0
+  set narcan-penetration (count people with [ carrying-narcan? ] / count people) * 100
+  ; update reporters
+  set treatment-utilization 100 - ((sum [treatment-capacity] of care-centers / total-treatment-capacity) * 100)
+  set in-treatment-total count people with [last-treated > 0]
+  set in-treatment-today count people with [in-treatment?]
+  set in-treatment-180 count people with [in-treatment? and days-in-treatment >= 180]
+  set in-treatment-60 count people with [in-treatment? and days-in-treatment >= 60]
+  ; resupply red-boxes
+  ask red-boxes [ set supply 25 ]
+end
+
+;;; 1.1 a procedure that specifies how individuals determine their use for a given day
+to determine-use
+  ; update the history of use
+  ifelse use-today? [ set use-recent-week insert-item 0 use-recent-week 1 ][set use-recent-week insert-item 0 use-recent-week 0]   ;; add a 0/1 to recent usage
+  set use-recent-week remove-item 7 use-recent-week                                                                                ;; remove the last item from the list
+  set use-today? false                                                                                                             ;; reset the indicator
+  ; update the history of OD
+  if OD-today? [ set OD-count OD-count + 1 ]                                                                                       ;; update the count of ODs for the individual
+  ifelse OD-today? [ set OD-recent-week insert-item 0 OD-recent-week 1 ][set OD-recent-week insert-item 0 OD-recent-week 0 ]       ;; add a 0/1 to recent OD
+  set OD-recent-week remove-item 7 OD-recent-week                                                                                  ;; remove the last item from the list
+  set OD-today? false                                                                                                              ;; reset the indicator
+
+  set potency 0
+  set use-at 0
+  set use-in-isolation? 0
+  set rescued-today? false
+  set intent-to-use? false
+
+  set desire-today random-normal craving (craving / 3)
+  ;ifelse in-treatment? [set intent-to-use? false] [set intent-to-use? true] ;random-float 100 < desire-today]
+  set intent-to-use? true
+end
+
+;;; 1.2 a procedure that specifies how individuals acquire what they intend to consume on a given day
+to acquire-drugs
+    if intent-to-use? [
+    set use-today? true
+    set potency (craving / 100 ) * random-gamma ( 2.5 * 2.5 / 50) (1 / (50 / 2.5))
+  ]
+end
+
+;;; 1.3 a procedure that specifies how individuals consume drugs, and potentially OD
+to consume-drugs
+  ifelse use-today? [
+    set use-at selected-use-location
+    set use-in-isolation? selected-way-of-using
+
+    set tolerance min (list (tolerance + 2) 100)
+    set craving min (list ( craving + 1 + sum use-recent-week) 100)
+    set OD-today? check-for-overdose
+    if OD-today? [
+      set OD-counter-today OD-counter-today + 1
+      set OD-counter OD-counter + 1
+    ]
+  ][
+   ifelse in-treatment? [
+      set craving max (list (craving - 2) 1)
+      set tolerance max (list (tolerance - 1) 5)
+    ][
+      set craving max (list (craving - 1) 10)
+      set tolerance max (list (tolerance - 1) 5)]
+  ]
+end
+
+to-report selected-use-location
+  let answers (list "home" "public" "other")
+  let pairs (map list answers use-location-pref)
+  let loc first rnd:weighted-one-of-list pairs [ [p] -> last p ]
+  report loc
+end
+
+to-report selected-way-of-using
+  let isolated? random-float 100
+  ifelse isolated? < use-isolation-rate [report true][report false]
+end
+
+;;; sensitivity to OD is determined in this procedure, both the tolerance inflation factor (below) and the potency calculation in the the acquire drug procedure (1.2) have a huge impact on the daily number of overdoses
+to-report check-for-overdose
+  ;report ifelse-value potency > tolerance [ true ][ false ]
+  report ifelse-value random-float 1 < 0.000567945 [ true ][ false ]
+end
+
+;;;;;;;;;;;;;; 1.4) RESCUE ;;;;;;;;;;;;;;;;;;;;; (Mostly from the old model)
+
+to rescue-or-die
+  if OD-today? [
+    ifelse Rescue-event? [
+      set rescued-today? true
+      set rescue-counter rescue-counter + 1
+    ][
+      set OD-deaths-today OD-deaths-today + 1
+      ( ifelse
+        last-treated = 0 [set OD-death-of-untreated OD-death-of-untreated + 1]
+        last-treated > (ticks - 30) [set OD-death-of-recently-treated OD-death-of-recently-treated + 1]
+        []
+      )
+      set OD-deaths OD-deaths + 1
+      if during-burn-in? != true [
+        die
+      ]
+    ]
+  ]
+end
+
+to-report Rescue-event?
+  let rescued? FALSE
+  let EMS-available? FALSE
+  if any? EMS with [narcan-equiped?] in-radius 0.75 [ set EMS-available? TRUE ]
+  ifelse use-in-isolation? [
+    if use-at = "home" []
+    if use-at = "public" [
+      if EMS-available? and random 100 < 30 [
+        set rescued? true
+        set rescue-by-EMS rescue-by-EMS + 1
+      ]
+    ]
+    if use-at = "other"[
+      if EMS-available? and random 100 < 15 [
+        set rescued? true
+        set rescue-by-EMS rescue-by-EMS + 1
+      ]
+    ]
+  ][
+    if use-at = "home" [
+      if carrying-narcan? or random 100 < narcan-penetration [ set rescued? true
+        set rescue-by-friend rescue-by-friend + 1
+      ]
+      if EMS-available? [
+        set rescued? true
+        set rescue-by-EMS rescue-by-EMS + 1
+      ]
+    ]
+    if use-at = "public" [
+      ifelse carrying-narcan? and random 100 < 30 or random 100 < narcan-penetration [
+        set rescued? true
+        set rescue-by-friend rescue-by-friend + 1
+      ][
+        if EMS-available? [
+          set rescued? true
+          set rescue-by-EMS rescue-by-EMS + 1
+        ]
+      ]
+    ]
+    if use-at = "other"[
+      ifelse carrying-narcan? and random 100 < 15 or random 100 < narcan-penetration [
+        set rescued? true
+        set rescue-by-friend rescue-by-friend + 1
+      ][
+        if EMS-available? and random 100 < 50 [
+          set rescued? true
+          set rescue-by-EMS rescue-by-EMS + 1
+        ]
+      ]
+    ]
+  ]
+  ;report rescued?
+  ;let treatment-factor ifelse-value in-treatment? [
+  ;  ifelse-value treatment-type = "MOUD" [bup-death-reduction-factor ticks][met-death-reduction-factor ticks]
+  ;] [0]
+  ;set treatment-factor 0.59
+  ;let death-rate 0.15316
+  ;set death-prob death-prob * (1 - treatment-factor)
+  ;print (death-rate * (1 - treatment-factor))
+  ;print treatment-factor
+  let treatment-factor treatment-death-reduction-factor days-in-treatment
+  report ifelse-value random-float 1 < default-death-rate * (1 - treatment-factor) [false] [true]
+  ;report ifelse-value random-float 1 < death-prob [false] [true]
+end
+
+
+;;;;;;;;;;;;;; 2) TREATMENT ;;;;;;;;;;;;;;;;;;;;;
+
+
+;;; a procedure that specifies how individuals potentially seek to connect to treatment
+to seek-treatment
+;  ;; Roughly 20% of the population is ready to seek care at any time,
+;  ;; the daily rate of newly ready people is 2.8571% which should come from 80% non-ready folks, equaling 3.571% of that population
+;  ;; TO DO: This rate will need to be made conditional on use frequency, craving, drug type, etc !!!
+;  let default-linkage-rate .03571
+;  ;; For those in jail there could be a higher chance of becoming ready for change while in florida remains unchanged from our default
+;  let jail-factor 0
+;  ;; For those that interact with the care system there is an additional probability of starting to seek treatment
+;  ;; There's a 25% chance a visit results in a diagnosis, and 20% will be ready to change
+;  let care-linkage-factor .25 * .2
+;  ;; For those that interact with the Emergency Departments there is an additional probability of starting to seek treatment
+;  ;; There's a 50% chance a visit results in a diagnosis, and 20% will be ready to change
+;  let ed-linkage-factor .5 * .2
+;  ;; For those that experience a rescue event, there is an additional probability of starting to seek treatment
+;  ;; There's a 10% chance a rescue event will results in a desire to seek treatment
+;  let rescue-linkage-factor .1
+;
+;  ;; PART 1: Default
+;  let linkage-rate default-linkage-rate
+;  ;; PART 2: Jail interactions
+;  if in-jail? [set linkage-rate linkage-rate + jail-factor]
+;  ;; PART 3: Primary care interactions
+;  ;; based on 82% of adults having a yearly doctor visit, we determine the daily probability of a docs visits to be 0.00469
+;  if not in-jail? and random-float 1 < 0.00469 [set linkage-rate linkage-rate + care-linkage-rate]
+;  ;; PART 4: ED visits
+;  ;; based on 19% of adults having a yearly ED visit, we determine the daily probability of a ED visits to be 0.00058
+;  if not in-jail? and random-float 1 < 0.00058 [set linkage-rate linkage-rate + ed-linkage-rate]
+;  ;; PART 5: Rescue events
+;  if rescued-today? [set linkage-rate linkage-rate + rescue-linkage-rate]
+;
+;  if not in-treatment? and care-seeking? = FALSE and in-treatment? = FALSE [
+;    if random-float 1 < linkage-rate [
+;      set care-seeking? TRUE
+;    ]
+;  ]
+
+;  if not in-treatment? and care-seeking? = FALSE and in-treatment? = FALSE [
+;    ;; PART 1: Default
+;    if not in-jail? and random-float 100 < 3.571 [
+;      set care-seeking? TRUE
+;    ]
+;    ;; PART 2: Jail interactions
+;    if in-jail? and random-float 100 < (3.571 * 1) [
+;      set care-seeking? TRUE
+;    ]
+;    ; PART 3: Primary care interactions
+;    ;; For those that interact with the care system there is an additional probability of starting to seek treatment
+;    ;; based on 82% of adults having a yearly doctor visit, we determine the daily probability of a docs visits to be 0.00469
+;    if not care-seeking? and not in-jail? and random-float 1 < 0.00469 [
+;      ;; with a 25% chance a visit results in a diagnosis, and 20% will be ready to change
+;      if random 100 < 25 and random 100 < 20[
+;        set care-seeking? TRUE
+;      ]
+;    ]
+;    ; PART 4: ED visits
+;    ;; For those that interact with the Emergency Departments there is an additional probability of starting to seek treatment
+;    ;; based on 19% of adults having a yearly ED visit, we determine the daily probability of a ED visits to be 0.00058
+;    if not care-seeking? and not in-jail? and random-float 1 < 0.00058 [
+;      ;; with a 50% chance a visit results in a diagnosis, and 20% will be ready to change
+;      if random 100 < 50 and random 100 < 20 [
+;        set care-seeking? TRUE
+;      ]
+;    ]
+;    ;; PART 5: Rescue events
+;    ;; For those that experience a rescue event, there is an additional probability of starting to seek treatment
+;    if rescued-today? [
+;      ;; with a 10% chance a rescue event will results in a desire to seek treatment
+;      if random 100 < 10 [
+;        set care-seeking? TRUE
+;      ]
+;    ]
+;  ]
+
+  if care-seeking? = FALSE and in-treatment? = FALSE [
+    let linkage-rate 0.5
+    if intervention-scenario = 1 or intervention-scenario = 3 [set linkage-rate linkage-rate * 2]
+    if intervention-scenario = 4 [set linkage-rate 100]
+    if intervention-scenario = 5 [set linkage-rate 100]
+    if random-float 100 < linkage-rate [
+      set care-seeking? TRUE
+      set treatment-entry treatment-entry + 1
+    ]
+  ]
+end
+
+to get-in-treatment
+  ;; once intent to seeking care is obtained, get linked to care
+  if care-seeking? [
+    set treatment-type ifelse-value random-float 1 < .57 ["MOUD"]["MAT"]
+    ;if intervention-scenario >= 1 [set treatment-type "MAT"]
+    set my-treatment-provider rnd:weighted-one-of care-centers [(1 / distance myself)]
+    set my-treatment-distance [distance myself] of my-treatment-provider
+    if [treatment-capacity] of my-treatment-provider > 0 [
+      ask my-treatment-provider [ set treatment-capacity treatment-capacity - 1]
+    ]
+    set in-treatment? true
+    set care-seeking? false
+  ]
+end
+
+;; a procedure that specifies how individuals consume treatment, are retained or drop out, and adjusts their tolerance and cravings because of it
+to consume-treatment
+  if in-treatment? [
+    ;get-dose-MAT
+    set treatment-today? true
+    set last-treated ticks
+    set days-in-treatment days-in-treatment + 1
+;    let treatment-factor ifelse-value in-treatment? [
+;      ifelse-value treatment-type = "MOUD" [bup-death-reduction-factor ticks][met-death-reduction-factor ticks]
+;    ] [0]
+;    set death-prob death-prob * (1 - treatment-factor)
+    potentially-drop-out
+  ]
+end
+
+to potentially-drop-out
+  let drop-out-chance drop-out-prob days-in-treatment
+  ;print drop-out-chance
+  if intervention-scenario = 2 or intervention-scenario = 3 [set drop-out-chance drop-out-chance / 2 ]
+  if intervention-scenario = 4 [set drop-out-chance 0]
+  if intervention-scenario = 6 [set drop-out-chance 0]
+  ;print drop-out-chance
+  set my-dropout drop-out-chance
+  if random-float 1 < drop-out-chance [
+    set in-treatment? false
+    set days-in-treatment 0
+    set treatment-today? false
+    ask my-treatment-provider [ set treatment-capacity treatment-capacity + 1]
+    set my-treatment-provider nobody
+     set death-prob default-death-rate
+  ]
+end
+
+to-report treatment-death-reduction-factor [day]
+  report ifelse-value day < 180 [day * 0.87 / 180] [0.87]
+end
+
+to-report bup-death-reduction-factor [day]
+  let a 0.38
+  let c 0.072434
+  report a * c * Exp (- c * day)
+end
+
+to-report met-death-reduction-factor [day]
+  let a 0.814522
+  let c 0.0035305
+  report a * c * Exp (- c * day)
+end
+
+to-report drop-out-prob [day]
+  ;; Returns the probability of drop out from treatment for given day
+  ;; Fitted to operation par data
+  ;; TO DO: Might need revision as the probs do not add up to 1
+  let a 1.73849
+  let b 0.00860059
+  let c 0.116011
+  let prob b + a * c * exp (- c * day)
+  (ifelse
+    dropout-scenario = 1 [
+      set prob prob / 2
+    ]
+    dropout-scenario = 2 [
+      set prob min list prob 0.1
+    ]
+    dropout-scenario = 3 [
+      set prob min list prob 0.05
+    ]
+    dropout-scenario = 4 [
+      if day <= 7 [set prob 0]
+    ]
+    dropout-scenario = 5 [
+      if day <= 14 [set prob 0]
+  ] [])
+  report prob
+end
+
+;;;;;;;;;;;;;; 3) INTERVENTIONS ;;;;;;;;;;;;;;;;;;;;;
+
+;; Intervention-scenario values
+;; 0: Baseline (no interventions)
+;; 1: Double treatment linkage rate
+;; 2: Half drop-out rate
+;; 3: 1 + 2
+;; 4: MAX Everyone is in treatment + No drop-out]]></code>
+  <widgets>
+    <view x="295" wrappingAllowedX="false" y="10" frameRate="30.0" minPycor="-16" height="712" showTickCounter="true" patchSize="21.455" fontSize="10" wrappingAllowedY="false" width="540" tickCounterLabel="ticks" maxPycor="16" updateMode="1" maxPxcor="12" minPxcor="-12"></view>
+    <switch x="20" y="348" height="40" on="true" variable="show-boundaries?" width="194" display="show-boundaries?"></switch>
+    <switch x="20" y="393" height="40" on="true" variable="care-centers-visible?" width="194" display="care-centers-visible?"></switch>
+    <switch x="20" y="438" height="40" on="true" variable="narcan-providers-visible?" width="194" display="narcan-providers-visible?"></switch>
+    <slider x="20" step="500" y="85" max="20000" width="172" display="population" height="50" min="5000" direction="Horizontal" default="20000.0" variable="population"></slider>
+    <slider x="1115" step="5" y="80" max="100" width="205" display="isolated-user-percentage" height="50" min="0" direction="Horizontal" default="30.0" variable="isolated-user-percentage" units="%"></slider>
+    <switch x="20" y="573" height="40" on="false" variable="people-visible?" width="195" display="people-visible?"></switch>
+    <button x="20" y="162" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="65">setup</button>
+    <switch x="20" y="528" height="40" on="false" variable="EMS-visible?" width="195" display="EMS-visible?"></switch>
+    <chooser x="1115" y="291" height="60" variable="narcan-boxes?" current="1" width="205" display="narcan-boxes?">
+      <choice type="string" value="none"></choice>
+      <choice type="string" value="random"></choice>
+      <choice type="string" value="targeted"></choice>
+    </chooser>
+    <button x="95" y="162" height="40" disableUntilTicks="false" forever="true" kind="Observer" width="65">go</button>
+    <switch x="1115" y="135" height="40" on="false" variable="leave-behind-narcan?" width="205" display="leave-behind-narcan?"></switch>
+    <slider x="1115" step="1" y="180" max="500" width="205" display="nr-narcan-boxes" height="50" min="1" direction="Horizontal" default="200.0" variable="nr-narcan-boxes"></slider>
+    <slider x="1115" step="1" y="235" max="100" width="206" display="treatment-narcan-supply-likelihood" height="50" min="0" direction="Horizontal" default="10.0" variable="treatment-narcan-supply-likelihood" units="%"></slider>
+    <button x="20" y="209" height="40" disableUntilTicks="false" forever="false" kind="Observer" width="140" display="go-1year">setup
+repeat 365 [go]</button>
+    <switch x="20" y="618" height="40" on="true" variable="show-background-map?" width="195" display="show-background-map?"></switch>
+    <switch x="20" y="483" height="40" on="false" variable="red-box-visible?" width="195" display="red-box-visible?"></switch>
+    <switch x="20" y="286" height="40" on="false" variable="burn-in?" width="195" display="burn-in?"></switch>
+    <monitor x="1335" precision="17" y="145" height="60" fontSize="11" width="105">OD-deaths</monitor>
+    <monitor x="1335" precision="17" y="80" height="60" fontSize="11" width="105">OD-counter</monitor>
+    <monitor x="1335" precision="17" y="210" height="60" fontSize="11" width="105" display="# in treatment">count people with [in-treatment?]</monitor>
+    <chooser x="895" y="80" height="60" variable="intervention-scenario" current="0" width="205" display="intervention-scenario">
+      <choice type="double" value="0.0"></choice>
+      <choice type="double" value="1.0"></choice>
+      <choice type="double" value="2.0"></choice>
+      <choice type="double" value="3.0"></choice>
+      <choice type="double" value="4.0"></choice>
+      <choice type="double" value="5.0"></choice>
+      <choice type="double" value="6.0"></choice>
+    </chooser>
+    <chooser x="20" y="15" height="60" variable="county" current="0" width="170" display="county">
+      <choice type="string" value="Pinellas"></choice>
+      <choice type="string" value="Santa Clara"></choice>
+    </chooser>
+    <chooser x="895" y="150" height="60" variable="dropout-scenario" current="0" width="205" display="dropout-scenario">
+      <choice type="double" value="0.0"></choice>
+      <choice type="double" value="1.0"></choice>
+      <choice type="double" value="2.0"></choice>
+      <choice type="double" value="3.0"></choice>
+      <choice type="double" value="4.0"></choice>
+      <choice type="double" value="5.0"></choice>
+    </chooser>
+  </widgets>
+  <info>## WHAT IS IT?
+
+(a general understanding of what the model is trying to show or explain)
+
+## HOW IT WORKS
+
+(what rules the agents use to create the overall behavior of the model)
+
+## HOW TO USE IT
+
+(how to use the model, including a description of each of the items in the Interface tab)
+
+## THINGS TO NOTICE
+
+(suggested things for the user to notice while running the model)
+
+## THINGS TO TRY
+
+(suggested things for the user to try to do (move sliders, switches, etc.) with the model)
+
+## EXTENDING THE MODEL
+
+(suggested things to add or change in the Code tab to make the model more complicated, detailed, accurate, etc.)
+
+## NETLOGO FEATURES
+
+(interesting or unusual features of NetLogo that the model uses, particularly in the Code tab; or where workarounds were needed for missing features)
+
+## RELATED MODELS
+
+(models in the NetLogo Models Library and elsewhere which are of related interest)
+
+## CREDITS AND REFERENCES
+
+(a reference to the model's URL on the web if it has one, as well as any other necessary credits, citations, and links)</info>
+  <turtleShapes>
+    <shape name="default" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="5"></point>
+        <point x="40" y="250"></point>
+        <point x="150" y="205"></point>
+        <point x="260" y="250"></point>
+      </polygon>
+    </shape>
+    <shape name="airplane" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="135" y="15"></point>
+        <point x="120" y="60"></point>
+        <point x="120" y="105"></point>
+        <point x="15" y="165"></point>
+        <point x="15" y="195"></point>
+        <point x="120" y="180"></point>
+        <point x="135" y="240"></point>
+        <point x="105" y="270"></point>
+        <point x="120" y="285"></point>
+        <point x="150" y="270"></point>
+        <point x="180" y="285"></point>
+        <point x="210" y="270"></point>
+        <point x="165" y="240"></point>
+        <point x="180" y="180"></point>
+        <point x="285" y="195"></point>
+        <point x="285" y="165"></point>
+        <point x="180" y="105"></point>
+        <point x="180" y="60"></point>
+        <point x="165" y="15"></point>
+      </polygon>
+    </shape>
+    <shape name="arrow" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="0"></point>
+        <point x="0" y="150"></point>
+        <point x="105" y="150"></point>
+        <point x="105" y="293"></point>
+        <point x="195" y="293"></point>
+        <point x="195" y="150"></point>
+        <point x="300" y="150"></point>
+      </polygon>
+    </shape>
+    <shape name="box" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="285"></point>
+        <point x="285" y="225"></point>
+        <point x="285" y="75"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="135"></point>
+        <point x="15" y="75"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="75"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="75"></point>
+        <point x="15" y="225"></point>
+        <point x="150" y="285"></point>
+        <point x="150" y="135"></point>
+      </polygon>
+      <line endX="150" startY="285" marked="false" color="255" endY="135" startX="150"></line>
+      <line endX="15" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+      <line endX="285" startY="135" marked="false" color="255" endY="75" startX="150"></line>
+    </shape>
+    <shape name="bug" rotatable="true" editableColorIndex="0">
+      <circle x="96" y="182" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="110" y="127" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <circle x="110" y="75" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <line endX="80" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+      <line endX="220" startY="100" marked="true" color="-1920102913" endY="30" startX="150"></line>
+    </shape>
+    <shape name="butterfly" rotatable="true" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="209" y="199"></point>
+        <point x="225" y="225"></point>
+        <point x="225" y="255"></point>
+        <point x="195" y="270"></point>
+        <point x="165" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="165"></point>
+        <point x="89" y="198"></point>
+        <point x="75" y="225"></point>
+        <point x="75" y="255"></point>
+        <point x="105" y="270"></point>
+        <point x="135" y="255"></point>
+        <point x="150" y="240"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="139" y="148"></point>
+        <point x="100" y="105"></point>
+        <point x="55" y="90"></point>
+        <point x="25" y="90"></point>
+        <point x="10" y="105"></point>
+        <point x="10" y="135"></point>
+        <point x="25" y="180"></point>
+        <point x="40" y="195"></point>
+        <point x="85" y="194"></point>
+        <point x="139" y="163"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="162" y="150"></point>
+        <point x="200" y="105"></point>
+        <point x="245" y="90"></point>
+        <point x="275" y="90"></point>
+        <point x="290" y="105"></point>
+        <point x="290" y="135"></point>
+        <point x="275" y="180"></point>
+        <point x="260" y="195"></point>
+        <point x="215" y="195"></point>
+        <point x="162" y="165"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="135" y="225"></point>
+        <point x="120" y="150"></point>
+        <point x="135" y="120"></point>
+        <point x="150" y="105"></point>
+        <point x="165" y="120"></point>
+        <point x="180" y="150"></point>
+        <point x="165" y="225"></point>
+      </polygon>
+      <circle x="135" y="90" marked="false" color="255" diameter="30" filled="true"></circle>
+      <line endX="195" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+      <line endX="105" startY="105" marked="false" color="255" endY="60" startX="150"></line>
+    </shape>
+    <shape name="car" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="300" y="180"></point>
+        <point x="279" y="164"></point>
+        <point x="261" y="144"></point>
+        <point x="240" y="135"></point>
+        <point x="226" y="132"></point>
+        <point x="213" y="106"></point>
+        <point x="203" y="84"></point>
+        <point x="185" y="63"></point>
+        <point x="159" y="50"></point>
+        <point x="135" y="50"></point>
+        <point x="75" y="60"></point>
+        <point x="0" y="150"></point>
+        <point x="0" y="165"></point>
+        <point x="0" y="225"></point>
+        <point x="300" y="225"></point>
+        <point x="300" y="180"></point>
+      </polygon>
+      <circle x="180" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <circle x="30" y="180" marked="false" color="255" diameter="90" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="162" y="80"></point>
+        <point x="132" y="78"></point>
+        <point x="134" y="135"></point>
+        <point x="209" y="135"></point>
+        <point x="194" y="105"></point>
+        <point x="189" y="96"></point>
+        <point x="180" y="89"></point>
+      </polygon>
+      <circle x="47" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+      <circle x="195" y="195" marked="true" color="-1920102913" diameter="58" filled="true"></circle>
+    </shape>
+    <shape name="circle" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="circle 2" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+    </shape>
+    <shape name="cow" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="200" y="193"></point>
+        <point x="197" y="249"></point>
+        <point x="179" y="249"></point>
+        <point x="177" y="196"></point>
+        <point x="166" y="187"></point>
+        <point x="140" y="189"></point>
+        <point x="93" y="191"></point>
+        <point x="78" y="179"></point>
+        <point x="72" y="211"></point>
+        <point x="49" y="209"></point>
+        <point x="48" y="181"></point>
+        <point x="37" y="149"></point>
+        <point x="25" y="120"></point>
+        <point x="25" y="89"></point>
+        <point x="45" y="72"></point>
+        <point x="103" y="84"></point>
+        <point x="179" y="75"></point>
+        <point x="198" y="76"></point>
+        <point x="252" y="64"></point>
+        <point x="272" y="81"></point>
+        <point x="293" y="103"></point>
+        <point x="285" y="121"></point>
+        <point x="255" y="121"></point>
+        <point x="242" y="118"></point>
+        <point x="224" y="167"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="73" y="210"></point>
+        <point x="86" y="251"></point>
+        <point x="62" y="249"></point>
+        <point x="48" y="208"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="25" y="114"></point>
+        <point x="16" y="195"></point>
+        <point x="9" y="204"></point>
+        <point x="23" y="213"></point>
+        <point x="25" y="200"></point>
+        <point x="39" y="123"></point>
+      </polygon>
+    </shape>
+    <shape name="cylinder" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+    </shape>
+    <shape name="dot" rotatable="false" editableColorIndex="0">
+      <circle x="90" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+    </shape>
+    <shape name="face happy" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="255"></point>
+        <point x="90" y="239"></point>
+        <point x="62" y="213"></point>
+        <point x="47" y="191"></point>
+        <point x="67" y="179"></point>
+        <point x="90" y="203"></point>
+        <point x="109" y="218"></point>
+        <point x="150" y="225"></point>
+        <point x="192" y="218"></point>
+        <point x="210" y="203"></point>
+        <point x="227" y="181"></point>
+        <point x="251" y="194"></point>
+        <point x="236" y="217"></point>
+        <point x="212" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="face neutral" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="7" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <rectangle endX="240" startY="195" marked="false" color="255" endY="225" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="face sad" rotatable="false" editableColorIndex="0">
+      <circle x="8" y="8" marked="true" color="-1920102913" diameter="285" filled="true"></circle>
+      <circle x="60" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <circle x="180" y="75" marked="false" color="255" diameter="60" filled="true"></circle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="150" y="168"></point>
+        <point x="90" y="184"></point>
+        <point x="62" y="210"></point>
+        <point x="47" y="232"></point>
+        <point x="67" y="244"></point>
+        <point x="90" y="220"></point>
+        <point x="109" y="205"></point>
+        <point x="150" y="198"></point>
+        <point x="192" y="205"></point>
+        <point x="210" y="220"></point>
+        <point x="227" y="242"></point>
+        <point x="251" y="229"></point>
+        <point x="236" y="206"></point>
+        <point x="212" y="183"></point>
+      </polygon>
+    </shape>
+    <shape name="fish" rotatable="false" editableColorIndex="0">
+      <polygon color="-1" filled="true" marked="false">
+        <point x="44" y="131"></point>
+        <point x="21" y="87"></point>
+        <point x="15" y="86"></point>
+        <point x="0" y="120"></point>
+        <point x="15" y="150"></point>
+        <point x="0" y="180"></point>
+        <point x="13" y="214"></point>
+        <point x="20" y="212"></point>
+        <point x="45" y="166"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="135" y="195"></point>
+        <point x="119" y="235"></point>
+        <point x="95" y="218"></point>
+        <point x="76" y="210"></point>
+        <point x="46" y="204"></point>
+        <point x="60" y="165"></point>
+      </polygon>
+      <polygon color="-1" filled="true" marked="false">
+        <point x="75" y="45"></point>
+        <point x="83" y="77"></point>
+        <point x="71" y="103"></point>
+        <point x="86" y="114"></point>
+        <point x="166" y="78"></point>
+        <point x="135" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="136"></point>
+        <point x="151" y="77"></point>
+        <point x="226" y="81"></point>
+        <point x="280" y="119"></point>
+        <point x="292" y="146"></point>
+        <point x="292" y="160"></point>
+        <point x="287" y="170"></point>
+        <point x="270" y="195"></point>
+        <point x="195" y="210"></point>
+        <point x="151" y="212"></point>
+        <point x="30" y="166"></point>
+      </polygon>
+      <circle x="215" y="106" marked="false" color="255" diameter="30" filled="true"></circle>
+    </shape>
+    <shape name="flag" rotatable="false" editableColorIndex="0">
+      <rectangle endX="75" startY="15" marked="true" color="-1920102913" endY="300" startX="60" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="90" y="150"></point>
+        <point x="270" y="90"></point>
+        <point x="90" y="30"></point>
+      </polygon>
+      <line endX="90" startY="135" marked="true" color="-1920102913" endY="135" startX="75"></line>
+      <line endX="90" startY="45" marked="true" color="-1920102913" endY="45" startX="75"></line>
+    </shape>
+    <shape name="flower" rotatable="false" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="135" y="120"></point>
+        <point x="165" y="165"></point>
+        <point x="180" y="210"></point>
+        <point x="180" y="240"></point>
+        <point x="150" y="300"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="240"></point>
+        <point x="195" y="195"></point>
+        <point x="165" y="135"></point>
+      </polygon>
+      <circle x="85" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="147" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="192" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="85" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="40" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="177" y="132" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="70" y="85" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="130" y="25" marked="true" color="-1920102913" diameter="38" filled="true"></circle>
+      <circle x="96" y="51" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="113" y="68" marked="false" color="255" diameter="74" filled="true"></circle>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="189" y="233"></point>
+        <point x="219" y="188"></point>
+        <point x="249" y="173"></point>
+        <point x="279" y="188"></point>
+        <point x="234" y="218"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="180" y="255"></point>
+        <point x="150" y="210"></point>
+        <point x="105" y="210"></point>
+        <point x="75" y="240"></point>
+        <point x="135" y="240"></point>
+      </polygon>
+    </shape>
+    <shape name="house" rotatable="false" editableColorIndex="0">
+      <rectangle endX="255" startY="120" marked="true" color="-1920102913" endY="285" startX="45" filled="true"></rectangle>
+      <rectangle endX="180" startY="210" marked="false" color="255" endY="285" startX="120" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="15" y="120"></point>
+        <point x="150" y="15"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+      <line endX="270" startY="120" marked="false" color="255" endY="120" startX="30"></line>
+    </shape>
+    <shape name="leaf" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="210"></point>
+        <point x="135" y="195"></point>
+        <point x="120" y="210"></point>
+        <point x="60" y="210"></point>
+        <point x="30" y="195"></point>
+        <point x="60" y="180"></point>
+        <point x="60" y="165"></point>
+        <point x="15" y="135"></point>
+        <point x="30" y="120"></point>
+        <point x="15" y="105"></point>
+        <point x="40" y="104"></point>
+        <point x="45" y="90"></point>
+        <point x="60" y="90"></point>
+        <point x="90" y="105"></point>
+        <point x="105" y="120"></point>
+        <point x="120" y="120"></point>
+        <point x="105" y="60"></point>
+        <point x="120" y="60"></point>
+        <point x="135" y="30"></point>
+        <point x="150" y="15"></point>
+        <point x="165" y="30"></point>
+        <point x="180" y="60"></point>
+        <point x="195" y="60"></point>
+        <point x="180" y="120"></point>
+        <point x="195" y="120"></point>
+        <point x="210" y="105"></point>
+        <point x="240" y="90"></point>
+        <point x="255" y="90"></point>
+        <point x="263" y="104"></point>
+        <point x="285" y="105"></point>
+        <point x="270" y="120"></point>
+        <point x="285" y="135"></point>
+        <point x="240" y="165"></point>
+        <point x="240" y="180"></point>
+        <point x="270" y="195"></point>
+        <point x="240" y="210"></point>
+        <point x="180" y="210"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="195"></point>
+        <point x="135" y="240"></point>
+        <point x="120" y="255"></point>
+        <point x="105" y="255"></point>
+        <point x="105" y="285"></point>
+        <point x="135" y="285"></point>
+        <point x="165" y="240"></point>
+        <point x="165" y="195"></point>
+      </polygon>
+    </shape>
+    <shape name="line" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="300" startX="150"></line>
+    </shape>
+    <shape name="line half" rotatable="true" editableColorIndex="0">
+      <line endX="150" startY="0" marked="true" color="-1920102913" endY="150" startX="150"></line>
+    </shape>
+    <shape name="pentagon" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="15"></point>
+        <point x="15" y="120"></point>
+        <point x="60" y="285"></point>
+        <point x="240" y="285"></point>
+        <point x="285" y="120"></point>
+      </polygon>
+    </shape>
+    <shape name="person" rotatable="false" editableColorIndex="0">
+      <circle x="110" y="5" marked="true" color="-1920102913" diameter="80" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="120" y="195"></point>
+        <point x="90" y="285"></point>
+        <point x="105" y="300"></point>
+        <point x="135" y="300"></point>
+        <point x="150" y="225"></point>
+        <point x="165" y="300"></point>
+        <point x="195" y="300"></point>
+        <point x="210" y="285"></point>
+        <point x="180" y="195"></point>
+        <point x="195" y="90"></point>
+      </polygon>
+      <rectangle endX="172" startY="79" marked="true" color="-1920102913" endY="94" startX="127" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="195" y="90"></point>
+        <point x="240" y="150"></point>
+        <point x="225" y="180"></point>
+        <point x="165" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="105" y="90"></point>
+        <point x="60" y="150"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="105"></point>
+      </polygon>
+    </shape>
+    <shape name="plant" rotatable="false" editableColorIndex="0">
+      <rectangle endX="165" startY="90" marked="true" color="-1920102913" endY="300" startX="135" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="255"></point>
+        <point x="90" y="210"></point>
+        <point x="45" y="195"></point>
+        <point x="75" y="255"></point>
+        <point x="135" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="255"></point>
+        <point x="210" y="210"></point>
+        <point x="255" y="195"></point>
+        <point x="225" y="255"></point>
+        <point x="165" y="285"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="180"></point>
+        <point x="90" y="135"></point>
+        <point x="45" y="120"></point>
+        <point x="75" y="180"></point>
+        <point x="135" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="180"></point>
+        <point x="165" y="210"></point>
+        <point x="225" y="180"></point>
+        <point x="255" y="120"></point>
+        <point x="210" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="105"></point>
+        <point x="90" y="60"></point>
+        <point x="45" y="45"></point>
+        <point x="75" y="105"></point>
+        <point x="135" y="135"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="165" y="105"></point>
+        <point x="165" y="135"></point>
+        <point x="225" y="105"></point>
+        <point x="255" y="45"></point>
+        <point x="210" y="60"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="135" y="90"></point>
+        <point x="120" y="45"></point>
+        <point x="150" y="15"></point>
+        <point x="180" y="45"></point>
+        <point x="165" y="90"></point>
+      </polygon>
+    </shape>
+    <shape name="sheep" rotatable="false" editableColorIndex="15">
+      <circle x="203" y="65" marked="true" color="-1" diameter="88" filled="true"></circle>
+      <circle x="70" y="65" marked="true" color="-1" diameter="162" filled="true"></circle>
+      <circle x="150" y="105" marked="true" color="-1" diameter="120" filled="true"></circle>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="218" y="120"></point>
+        <point x="240" y="165"></point>
+        <point x="255" y="165"></point>
+        <point x="278" y="120"></point>
+      </polygon>
+      <circle x="214" y="72" marked="false" color="-1920102913" diameter="67" filled="true"></circle>
+      <rectangle endX="179" startY="223" marked="true" color="-1" endY="298" startX="164" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="45" y="285"></point>
+        <point x="30" y="285"></point>
+        <point x="30" y="240"></point>
+        <point x="15" y="195"></point>
+        <point x="45" y="210"></point>
+      </polygon>
+      <circle x="3" y="83" marked="true" color="-1" diameter="150" filled="true"></circle>
+      <rectangle endX="80" startY="221" marked="true" color="-1" endY="296" startX="65" filled="true"></rectangle>
+      <polygon color="-1" filled="true" marked="true">
+        <point x="195" y="285"></point>
+        <point x="210" y="285"></point>
+        <point x="210" y="240"></point>
+        <point x="240" y="210"></point>
+        <point x="195" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="276" y="85"></point>
+        <point x="285" y="105"></point>
+        <point x="302" y="99"></point>
+        <point x="294" y="83"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="false">
+        <point x="219" y="85"></point>
+        <point x="210" y="105"></point>
+        <point x="193" y="99"></point>
+        <point x="201" y="83"></point>
+      </polygon>
+    </shape>
+    <shape name="square" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+    </shape>
+    <shape name="square 2" rotatable="false" editableColorIndex="0">
+      <rectangle endX="270" startY="30" marked="true" color="-1920102913" endY="270" startX="30" filled="true"></rectangle>
+      <rectangle endX="240" startY="60" marked="false" color="255" endY="240" startX="60" filled="true"></rectangle>
+    </shape>
+    <shape name="star" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="151" y="1"></point>
+        <point x="185" y="108"></point>
+        <point x="298" y="108"></point>
+        <point x="207" y="175"></point>
+        <point x="242" y="282"></point>
+        <point x="151" y="216"></point>
+        <point x="59" y="282"></point>
+        <point x="94" y="175"></point>
+        <point x="3" y="108"></point>
+        <point x="116" y="108"></point>
+      </polygon>
+    </shape>
+    <shape name="target" rotatable="false" editableColorIndex="0">
+      <circle x="0" y="0" marked="true" color="-1920102913" diameter="300" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <circle x="60" y="60" marked="true" color="-1920102913" diameter="180" filled="true"></circle>
+      <circle x="90" y="90" marked="false" color="255" diameter="120" filled="true"></circle>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+    </shape>
+    <shape name="tree" rotatable="false" editableColorIndex="0">
+      <circle x="118" y="3" marked="true" color="-1920102913" diameter="94" filled="true"></circle>
+      <rectangle endX="180" startY="195" marked="false" color="-1653716737" endY="300" startX="120" filled="true"></rectangle>
+      <circle x="65" y="21" marked="true" color="-1920102913" diameter="108" filled="true"></circle>
+      <circle x="116" y="41" marked="true" color="-1920102913" diameter="127" filled="true"></circle>
+      <circle x="45" y="90" marked="true" color="-1920102913" diameter="120" filled="true"></circle>
+      <circle x="104" y="74" marked="true" color="-1920102913" diameter="152" filled="true"></circle>
+    </shape>
+    <shape name="triangle" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+    </shape>
+    <shape name="triangle 2" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="150" y="30"></point>
+        <point x="15" y="255"></point>
+        <point x="285" y="255"></point>
+      </polygon>
+      <polygon color="255" filled="true" marked="false">
+        <point x="151" y="99"></point>
+        <point x="225" y="223"></point>
+        <point x="75" y="224"></point>
+      </polygon>
+    </shape>
+    <shape name="truck" rotatable="false" editableColorIndex="0">
+      <rectangle endX="195" startY="45" marked="true" color="-1920102913" endY="187" startX="4" filled="true"></rectangle>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="296" y="193"></point>
+        <point x="296" y="150"></point>
+        <point x="259" y="134"></point>
+        <point x="244" y="104"></point>
+        <point x="208" y="104"></point>
+        <point x="207" y="194"></point>
+      </polygon>
+      <rectangle endX="195" startY="60" marked="false" color="-1" endY="105" startX="195" filled="true"></rectangle>
+      <polygon color="255" filled="true" marked="false">
+        <point x="238" y="112"></point>
+        <point x="252" y="141"></point>
+        <point x="219" y="141"></point>
+        <point x="218" y="112"></point>
+      </polygon>
+      <circle x="234" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <rectangle endX="214" startY="185" marked="true" color="-1920102913" endY="194" startX="181" filled="true"></rectangle>
+      <circle x="144" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="false" color="255" diameter="42" filled="true"></circle>
+      <circle x="24" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="144" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+      <circle x="234" y="174" marked="true" color="-1920102913" diameter="42" filled="false"></circle>
+    </shape>
+    <shape name="turtle" rotatable="true" editableColorIndex="0">
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="215" y="204"></point>
+        <point x="240" y="233"></point>
+        <point x="246" y="254"></point>
+        <point x="228" y="266"></point>
+        <point x="215" y="252"></point>
+        <point x="193" y="210"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="195" y="90"></point>
+        <point x="225" y="75"></point>
+        <point x="245" y="75"></point>
+        <point x="260" y="89"></point>
+        <point x="269" y="108"></point>
+        <point x="261" y="124"></point>
+        <point x="240" y="105"></point>
+        <point x="225" y="105"></point>
+        <point x="210" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="105" y="90"></point>
+        <point x="75" y="75"></point>
+        <point x="55" y="75"></point>
+        <point x="40" y="89"></point>
+        <point x="31" y="108"></point>
+        <point x="39" y="124"></point>
+        <point x="60" y="105"></point>
+        <point x="75" y="105"></point>
+        <point x="90" y="105"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="132" y="85"></point>
+        <point x="134" y="64"></point>
+        <point x="107" y="51"></point>
+        <point x="108" y="17"></point>
+        <point x="150" y="2"></point>
+        <point x="192" y="18"></point>
+        <point x="192" y="52"></point>
+        <point x="169" y="65"></point>
+        <point x="172" y="87"></point>
+      </polygon>
+      <polygon color="1504722175" filled="true" marked="false">
+        <point x="85" y="204"></point>
+        <point x="60" y="233"></point>
+        <point x="54" y="254"></point>
+        <point x="72" y="266"></point>
+        <point x="85" y="252"></point>
+        <point x="107" y="210"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="119" y="75"></point>
+        <point x="179" y="75"></point>
+        <point x="209" y="101"></point>
+        <point x="224" y="135"></point>
+        <point x="220" y="225"></point>
+        <point x="175" y="261"></point>
+        <point x="128" y="261"></point>
+        <point x="81" y="224"></point>
+        <point x="74" y="135"></point>
+        <point x="88" y="99"></point>
+      </polygon>
+    </shape>
+    <shape name="wheel" rotatable="false" editableColorIndex="0">
+      <circle x="3" y="3" marked="true" color="-1920102913" diameter="294" filled="true"></circle>
+      <circle x="30" y="30" marked="false" color="255" diameter="240" filled="true"></circle>
+      <line endX="150" startY="285" marked="true" color="-1920102913" endY="15" startX="150"></line>
+      <line endX="285" startY="150" marked="true" color="-1920102913" endY="150" startX="15"></line>
+      <circle x="120" y="120" marked="true" color="-1920102913" diameter="60" filled="true"></circle>
+      <line endX="79" startY="40" marked="true" color="-1920102913" endY="269" startX="216"></line>
+      <line endX="269" startY="84" marked="true" color="-1920102913" endY="221" startX="40"></line>
+      <line endX="269" startY="216" marked="true" color="-1920102913" endY="79" startX="40"></line>
+      <line endX="221" startY="40" marked="true" color="-1920102913" endY="269" startX="84"></line>
+    </shape>
+    <shape name="wolf" rotatable="false" editableColorIndex="0">
+      <polygon color="255" filled="true" marked="false">
+        <point x="253" y="133"></point>
+        <point x="245" y="131"></point>
+        <point x="245" y="133"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="2" y="194"></point>
+        <point x="13" y="197"></point>
+        <point x="30" y="191"></point>
+        <point x="38" y="193"></point>
+        <point x="38" y="205"></point>
+        <point x="20" y="226"></point>
+        <point x="20" y="257"></point>
+        <point x="27" y="265"></point>
+        <point x="38" y="266"></point>
+        <point x="40" y="260"></point>
+        <point x="31" y="253"></point>
+        <point x="31" y="230"></point>
+        <point x="60" y="206"></point>
+        <point x="68" y="198"></point>
+        <point x="75" y="209"></point>
+        <point x="66" y="228"></point>
+        <point x="65" y="243"></point>
+        <point x="82" y="261"></point>
+        <point x="84" y="268"></point>
+        <point x="100" y="267"></point>
+        <point x="103" y="261"></point>
+        <point x="77" y="239"></point>
+        <point x="79" y="231"></point>
+        <point x="100" y="207"></point>
+        <point x="98" y="196"></point>
+        <point x="119" y="201"></point>
+        <point x="143" y="202"></point>
+        <point x="160" y="195"></point>
+        <point x="166" y="210"></point>
+        <point x="172" y="213"></point>
+        <point x="173" y="238"></point>
+        <point x="167" y="251"></point>
+        <point x="160" y="248"></point>
+        <point x="154" y="265"></point>
+        <point x="169" y="264"></point>
+        <point x="178" y="247"></point>
+        <point x="186" y="240"></point>
+        <point x="198" y="260"></point>
+        <point x="200" y="271"></point>
+        <point x="217" y="271"></point>
+        <point x="219" y="262"></point>
+        <point x="207" y="258"></point>
+        <point x="195" y="230"></point>
+        <point x="192" y="198"></point>
+        <point x="210" y="184"></point>
+        <point x="227" y="164"></point>
+        <point x="242" y="144"></point>
+        <point x="259" y="145"></point>
+        <point x="284" y="151"></point>
+        <point x="277" y="141"></point>
+        <point x="293" y="140"></point>
+        <point x="299" y="134"></point>
+        <point x="297" y="127"></point>
+        <point x="273" y="119"></point>
+        <point x="270" y="105"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="-1" y="195"></point>
+        <point x="14" y="180"></point>
+        <point x="36" y="166"></point>
+        <point x="40" y="153"></point>
+        <point x="53" y="140"></point>
+        <point x="82" y="131"></point>
+        <point x="134" y="133"></point>
+        <point x="159" y="126"></point>
+        <point x="188" y="115"></point>
+        <point x="227" y="108"></point>
+        <point x="236" y="102"></point>
+        <point x="238" y="98"></point>
+        <point x="268" y="86"></point>
+        <point x="269" y="92"></point>
+        <point x="281" y="87"></point>
+        <point x="269" y="103"></point>
+        <point x="269" y="113"></point>
+      </polygon>
+    </shape>
+    <shape name="x" rotatable="false" editableColorIndex="0">
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="270" y="75"></point>
+        <point x="225" y="30"></point>
+        <point x="30" y="225"></point>
+        <point x="75" y="270"></point>
+      </polygon>
+      <polygon color="-1920102913" filled="true" marked="true">
+        <point x="30" y="75"></point>
+        <point x="75" y="30"></point>
+        <point x="270" y="225"></point>
+        <point x="225" y="270"></point>
+      </polygon>
+    </shape>
+  </turtleShapes>
+  <linkShapes>
+    <shape name="default" curviness="0.0">
+      <lines>
+        <line x="-0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+        <line x="0.0" visible="true">
+          <dash value="1.0"></dash>
+          <dash value="0.0"></dash>
+        </line>
+        <line x="0.2" visible="false">
+          <dash value="0.0"></dash>
+          <dash value="1.0"></dash>
+        </line>
+      </lines>
+      <indicator>
+        <shape name="link direction" rotatable="true" editableColorIndex="0">
+          <line endX="90" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+          <line endX="210" startY="150" marked="true" color="-1920102913" endY="180" startX="150"></line>
+        </shape>
+      </indicator>
+    </shape>
+  </linkShapes>
+  <previewCommands>setup repeat 75 [ go ]</previewCommands>
+  <experiments>
+    <experiment name="experiment" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="false" timeLimit="615">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>count people with [treatment-today?]</metric>
+        <metric>count people with [use-today?]</metric>
+        <metric>count people with [intent-to-use?]</metric>
+        <metric>count people with [last-treated = 0]</metric>
+        <metric>mean [tolerance] of people</metric>
+        <metric>mean [craving] of people</metric>
+        <metric>mean [days-in-treatment] of people</metric>
+        <metric>mean [days-in-treatment] of people with [in-treatment?]</metric>
+        <metric>mean [my-treatment-distance] of people with [in-treatment?]</metric>
+        <metric>OD-counter</metric>
+        <metric>rescue-counter</metric>
+        <metric>rescue-by-EMS</metric>
+        <metric>rescue-by-friend</metric>
+        <metric>OD-deaths</metric>
+        <metric>OD-death-of-untreated</metric>
+        <metric>OD-death-of-recently-treated</metric>
+        <metric>treatment-utilization</metric>
+        <metric>total-treatment-capacity</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="nr-narcan-boxes">
+          <value value="50"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="EMS-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="population">
+          <value value="18000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="isolated-user-percentage">
+          <value value="25"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="show-boundaries?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="narcan-boxes?">
+          <value value="&quot;none&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="percent-narcan-added">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="boundaries">
+          <value value="&quot;cities&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="leave-behind-narcan?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="narcan-providers-visible?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="care-centers-visible?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="MAT-set">
+          <value value="&quot;MAT-only&quot;"></value>
+          <value value="&quot;MAT-extra25-cap&quot;"></value>
+          <value value="&quot;MAT-extra50-cap&quot;"></value>
+          <value value="&quot;MAT-extra100-cap&quot;"></value>
+          <value value="&quot;MAT-and-BUP25&quot;"></value>
+          <value value="&quot;MAT-and-BUP50&quot;"></value>
+          <value value="&quot;MAT-and-BUP100&quot;"></value>
+          <value value="&quot;MAT-extra25-loc&quot;"></value>
+          <value value="&quot;MAT-extra50-loc&quot;"></value>
+          <value value="&quot;MAT-extra100-loc&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="add-location?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="people-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="treatment-narcan-supply-likelihood">
+          <value value="5"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="max-treatment-exp" repetitions="100" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="365">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>count people</metric>
+        <metric>count people with [treatment-today?]</metric>
+        <metric>count people with [use-today?]</metric>
+        <metric>count people with [intent-to-use?]</metric>
+        <metric>count people with [last-treated = 0]</metric>
+        <metric>mean [days-in-treatment] of people</metric>
+        <metric>mean [days-in-treatment] of people with [in-treatment?]</metric>
+        <metric>mean [my-treatment-distance] of people with [in-treatment?]</metric>
+        <metric>rescue-counter</metric>
+        <metric>rescue-by-EMS</metric>
+        <metric>rescue-by-friend</metric>
+        <metric>OD-death-of-untreated</metric>
+        <metric>OD-death-of-recently-treated</metric>
+        <metric>treatment-utilization</metric>
+        <metric>total-treatment-capacity</metric>
+        <metric>OD-counter</metric>
+        <metric>OD-deaths</metric>
+        <metric>treatment-entry</metric>
+        <metric>in-treatment-total</metric>
+        <metric>in-treatment-today</metric>
+        <metric>in-treatment-180</metric>
+        <metric>in-treatment-60</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="nr-narcan-boxes">
+          <value value="200"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intervention-scenario">
+          <value value="0"></value>
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+          <value value="4"></value>
+          <value value="5"></value>
+          <value value="6"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="dropout-scenario">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="burn-in?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="EMS-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="population">
+          <value value="20000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="show-boundaries?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="isolated-user-percentage">
+          <value value="30"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="narcan-boxes?">
+          <value value="&quot;random&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="leave-behind-narcan?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="show-background-map?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="red-box-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="care-centers-visible?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="narcan-providers-visible?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="people-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="treatment-narcan-supply-likelihood">
+          <value value="10"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="max-treatment-exp-quest" repetitions="1" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="365">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>count people</metric>
+        <metric>count people with [treatment-today?]</metric>
+        <metric>count people with [use-today?]</metric>
+        <metric>count people with [intent-to-use?]</metric>
+        <metric>count people with [last-treated = 0]</metric>
+        <metric>mean [days-in-treatment] of people</metric>
+        <metric>mean [days-in-treatment] of people with [in-treatment?]</metric>
+        <metric>mean [my-treatment-distance] of people with [in-treatment?]</metric>
+        <metric>rescue-counter</metric>
+        <metric>rescue-by-EMS</metric>
+        <metric>rescue-by-friend</metric>
+        <metric>OD-death-of-untreated</metric>
+        <metric>OD-death-of-recently-treated</metric>
+        <metric>treatment-utilization</metric>
+        <metric>total-treatment-capacity</metric>
+        <metric>OD-counter</metric>
+        <metric>OD-deaths</metric>
+        <metric>treatment-entry</metric>
+        <metric>in-treatment-total</metric>
+        <metric>in-treatment-today</metric>
+        <metric>in-treatment-180</metric>
+        <metric>in-treatment-60</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="nr-narcan-boxes">
+          <value value="200"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intervention-scenario">
+          <value value="0"></value>
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+          <value value="4"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="burn-in?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="EMS-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="population">
+          <value value="20000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="show-boundaries?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="isolated-user-percentage">
+          <value value="30"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="narcan-boxes?">
+          <value value="&quot;random&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="leave-behind-narcan?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="show-background-map?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="red-box-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="care-centers-visible?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="narcan-providers-visible?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="people-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="treatment-narcan-supply-likelihood">
+          <value value="10"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="max-treatment-additional-exp" repetitions="100" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="365">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>count people</metric>
+        <metric>count people with [treatment-today?]</metric>
+        <metric>count people with [use-today?]</metric>
+        <metric>count people with [intent-to-use?]</metric>
+        <metric>count people with [last-treated = 0]</metric>
+        <metric>mean [days-in-treatment] of people</metric>
+        <metric>mean [days-in-treatment] of people with [in-treatment?]</metric>
+        <metric>mean [my-treatment-distance] of people with [in-treatment?]</metric>
+        <metric>rescue-counter</metric>
+        <metric>rescue-by-EMS</metric>
+        <metric>rescue-by-friend</metric>
+        <metric>OD-death-of-untreated</metric>
+        <metric>OD-death-of-recently-treated</metric>
+        <metric>treatment-utilization</metric>
+        <metric>total-treatment-capacity</metric>
+        <metric>OD-counter</metric>
+        <metric>OD-deaths</metric>
+        <metric>treatment-entry</metric>
+        <metric>in-treatment-total</metric>
+        <metric>in-treatment-today</metric>
+        <metric>in-treatment-180</metric>
+        <metric>in-treatment-60</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="nr-narcan-boxes">
+          <value value="200"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intervention-scenario">
+          <value value="5"></value>
+          <value value="6"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="burn-in?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="EMS-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="population">
+          <value value="20000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="show-boundaries?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="isolated-user-percentage">
+          <value value="30"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="narcan-boxes?">
+          <value value="&quot;random&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="leave-behind-narcan?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="show-background-map?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="red-box-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="care-centers-visible?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="narcan-providers-visible?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="people-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="treatment-narcan-supply-likelihood">
+          <value value="10"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+    <experiment name="dropout-exp" repetitions="100" sequentialRunOrder="true" runMetricsEveryStep="true" timeLimit="365">
+      <setup>setup</setup>
+      <go>go</go>
+      <metrics>
+        <metric>count people</metric>
+        <metric>count people with [treatment-today?]</metric>
+        <metric>count people with [use-today?]</metric>
+        <metric>count people with [intent-to-use?]</metric>
+        <metric>count people with [last-treated = 0]</metric>
+        <metric>mean [days-in-treatment] of people</metric>
+        <metric>mean [days-in-treatment] of people with [in-treatment?]</metric>
+        <metric>mean [my-treatment-distance] of people with [in-treatment?]</metric>
+        <metric>rescue-counter</metric>
+        <metric>rescue-by-EMS</metric>
+        <metric>rescue-by-friend</metric>
+        <metric>OD-death-of-untreated</metric>
+        <metric>OD-death-of-recently-treated</metric>
+        <metric>treatment-utilization</metric>
+        <metric>total-treatment-capacity</metric>
+        <metric>OD-counter</metric>
+        <metric>OD-deaths</metric>
+        <metric>treatment-entry</metric>
+        <metric>in-treatment-total</metric>
+        <metric>in-treatment-today</metric>
+        <metric>in-treatment-180</metric>
+        <metric>in-treatment-60</metric>
+        <metric>mean [my-dropout] of people</metric>
+      </metrics>
+      <constants>
+        <enumeratedValueSet variable="nr-narcan-boxes">
+          <value value="200"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="intervention-scenario">
+          <value value="0"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="dropout-scenario">
+          <value value="0"></value>
+          <value value="1"></value>
+          <value value="2"></value>
+          <value value="3"></value>
+          <value value="4"></value>
+          <value value="5"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="burn-in?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="EMS-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="population">
+          <value value="20000"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="show-boundaries?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="isolated-user-percentage">
+          <value value="30"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="narcan-boxes?">
+          <value value="&quot;random&quot;"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="leave-behind-narcan?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="show-background-map?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="red-box-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="care-centers-visible?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="narcan-providers-visible?">
+          <value value="true"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="people-visible?">
+          <value value="false"></value>
+        </enumeratedValueSet>
+        <enumeratedValueSet variable="treatment-narcan-supply-likelihood">
+          <value value="10"></value>
+        </enumeratedValueSet>
+      </constants>
+    </experiment>
+  </experiments>
+</model>
